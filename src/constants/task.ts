@@ -1,0 +1,19 @@
+export const GROUP_PAGE_SIZES = [10, 20, 50, 100];
+export const DEFAULT_GROUP_PAGE_SIZE = 20;
+
+export const DEFAULT_VISIBLE_GROUPS_PER_PAGE = 12;
+
+// 普通模式
+export const DEFAULT_GROUP_FILE_RENDER_LIMIT = 300;
+export const GROUP_FILE_RENDER_STEP = 300;
+
+// 极限数据阈值
+export const EXTREME_GROUP_THRESHOLD = 2000;
+export const EXTREME_FILE_THRESHOLD = 5000;
+export const EXTREME_SUFFIX_ROW_THRESHOLD = 20000;
+
+// 极限模式降级参数
+export const EXTREME_GROUP_FILE_RENDER_LIMIT = 100;
+export const EXTREME_GROUP_FILE_RENDER_STEP = 100;
+export const EXTREME_OVERSCAN = 4;
+export const NORMAL_OVERSCAN = 10;

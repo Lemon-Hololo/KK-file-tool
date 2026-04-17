@@ -1,0 +1,1 @@
+export const PREVIEW_UNSUPPORTED_TEXT = "该类型暂不支持预览";
