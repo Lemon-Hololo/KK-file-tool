@@ -1,3 +1,7 @@
+//! 文本 / 图片 / 压缩包 的轻量预览。
+//!
+//! 结果以 JSON 返回，前端根据 `type` 字段分发到不同组件渲染。
+
 use std::{fs::File, io::Read, path::Path};
 
 use serde_json::json;
@@ -76,6 +80,7 @@ fn preview_zip(path: &str) -> AppResult<serde_json::Value> {
     }))
 }
 
+/// 按扩展名分派：未识别类型返回 `{"type":"unsupported"}`。
 pub fn detect_preview(path: &str) -> AppResult<serde_json::Value> {
     let ext = Path::new(path)
         .extension()

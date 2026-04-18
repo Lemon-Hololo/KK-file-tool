@@ -1,5 +1,10 @@
+//! Tauri 应用入口。
+//!
+//! `main.rs` 仅调用本模块的 `run()`，所有启动逻辑与命令注册集中于此。
+
 pub mod app_state;
 pub mod config;
+pub mod constants;
 pub mod error;
 pub mod external_config;
 pub mod models;
@@ -9,16 +14,9 @@ pub mod db;
 pub mod services;
 pub mod utils;
 
-use std::sync::{Arc, Mutex};
-
 use app_state::AppState;
 use tauri::Manager;
 
-/// 构建并返回 Tauri Builder（供 main.rs 调用）
-///
-/// 这样做的好处：
-/// 1) main.rs 变得极薄，只负责 run
-/// 2) 后续可以在 lib 层做测试与复用
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -28,45 +26,14 @@ pub fn run() {
                 .app_data_dir()
                 .map_err(|e| format!("app_data_dir error: {e}"))?;
 
-            if !app_dir.exists() {
-                std::fs::create_dir_all(&app_dir)
-                    .map_err(|e| format!("create app_data_dir failed: {e}"))?;
-            }
-
-            let db_path = {
-                let ext_config = external_config::load_config(&app_dir);
-                let resolved = external_config::resolve_db_path(&app_dir, &ext_config);
-                // 若自定义路径的父目录不存在，回退到默认路径
-                if let Some(parent) = resolved.parent() {
-                    if !parent.exists() {
-                        eprintln!(
-                            "Custom db_path parent dir does not exist: {:?}, falling back to default",
-                            parent
-                        );
-                        app_dir.join("fileflow.db")
-                    } else {
-                        resolved
-                    }
-                } else {
-                    app_dir.join("fileflow.db")
-                }
-            };
-            db::schema::init_schema(&db_path).map_err(|e| e.to_string())?;
-
-            let state = Arc::new(AppState {
-                app_data_dir: app_dir,
-                db_path,
-                tasks: Mutex::new(std::collections::HashMap::new()),
-                task_results: Mutex::new(std::collections::HashMap::new()),
-            });
-
+            let state = AppState::bootstrap(app_dir).map_err(|e| e.to_string())?;
             app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             // path
             commands::path::normalize_input_paths,
-            // dedup + runtime + move (批次B拆分后)
+            // dedup + runtime + move
             commands::dedup::start_dedup_task,
             commands::runtime::pause_task,
             commands::runtime::resume_task,
@@ -95,7 +62,20 @@ pub fn run() {
             commands::suffix::get_suffix_change_record_detail,
             commands::suffix::check_suffix_rollback,
             commands::suffix::delete_suffix_change_record,
-            commands::suffix::rollback_suffix_change
+            commands::suffix::rollback_suffix_change,
+            // mod tools (rename / organize / scan)
+            commands::mod_tools::preview_mod_rename,
+            commands::mod_tools::apply_mod_rename,
+            commands::mod_tools::preview_mod_organize,
+            commands::mod_tools::apply_mod_organize,
+            commands::mod_tools::list_mod_op_records,
+            commands::mod_tools::get_mod_op_record_detail,
+            commands::mod_tools::check_mod_op_rollback,
+            commands::mod_tools::rollback_mod_op,
+            commands::mod_tools::delete_mod_op_record,
+            commands::mod_tools::rename_mod_op_record,
+            commands::mod_tools::start_mod_scan_task,
+            commands::mod_tools::export_mod_scan_result
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");

@@ -16,6 +16,7 @@ import type { FileEntry } from "../types/task";
 import RealtimeLogPanel from "../components/RealtimeLogPanel.vue";
 import DedupPanel from "../components/DedupPanel.vue";
 import SuffixPanel from "../components/SuffixPanel.vue";
+import ModToolsPanel from "../components/ModToolsPanel.vue";
 // PreviewPanel 已由 DedupPanel 内部路径列直接使用，TaskPage 无需引入
 
 const taskStore = useTaskStore();
@@ -24,7 +25,7 @@ const recordStore = useRecordStore();
 const previewStore = usePreviewStore();
 
 const paths = useStorage<string[]>("taskPaths", []);
-const activeTab = useStorage<"dedup" | "suffix">("taskActiveTab", "dedup");
+const activeTab = useStorage<"dedup" | "suffix" | "mod">("taskActiveTab", "dedup");
 const pathInput = ref("");
 
 function addPath() {
@@ -114,6 +115,10 @@ onMounted(async () => {
 
         <el-tab-pane label="后缀批量修改" name="suffix" class="feature-pane">
           <SuffixPanel :paths="paths" :ensure-normalized-paths="ensureNormalizedPaths" />
+        </el-tab-pane>
+
+        <el-tab-pane label="Mod 工具" name="mod" class="feature-pane">
+          <ModToolsPanel :paths="paths" :ensure-normalized-paths="ensureNormalizedPaths" />
         </el-tab-pane>
       </el-tabs>
     </section>

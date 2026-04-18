@@ -1,3 +1,5 @@
+/** 哈希记录（去重索引）的前端状态管理。 */
+
 import { defineStore } from "pinia";
 import type { HashIndexRecord, HashIndexRecordSummary } from "../types/record";
 import { deleteHashRecord, listHashRecords, loadHashRecord, renameHashRecord } from "../services/record";

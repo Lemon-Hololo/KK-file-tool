@@ -1,3 +1,5 @@
+//! 移动报告（`move_reports` / `move_report_items`）持久化。
+
 use std::path::Path;
 
 use rusqlite::{params, Connection};
@@ -11,7 +13,10 @@ fn conn(db_path: &Path) -> AppResult<Connection> {
     Connection::open(db_path).map_err(|e| AppError::Db(e.to_string()))
 }
 
-/// 事务：写 move report + 删除成功移动文件的 hash_entries
+/// 事务：写入移动报告 + 所有 item + 清理被成功移动文件对应的 `hash_entries`。
+///
+/// 删除 `hash_entries` 是为了保证下次使用"上次记录"做跨会话比对时，
+/// 已经不在原位的文件不再被当作"存在"。
 pub fn save_move_report_and_cleanup_entries(
     db_path: &Path,
     report: &MoveReport,

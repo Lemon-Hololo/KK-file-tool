@@ -4,7 +4,9 @@
       "Bash(npm run build)",
       "Bash(cargo check --message-format=short)",
       "Bash(cargo check:*)",
-      "Bash(npx vue-tsc:*)"
+      "Bash(npx vue-tsc:*)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(xargs wc *)"
     ]
   }
 }

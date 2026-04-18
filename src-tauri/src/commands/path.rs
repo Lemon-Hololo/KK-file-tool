@@ -1,3 +1,5 @@
+//! 路径规范化命令。
+
 use std::{collections::HashSet, path::PathBuf};
 
 use crate::{
@@ -11,6 +13,9 @@ fn canonicalize_path(raw: &str) -> Option<PathBuf> {
     std::fs::canonicalize(p).ok()
 }
 
+/// 去重、去不可访问、去"被父目录覆盖"的子目录，返回规范化后的路径与被剔除项。
+///
+/// 前端会把 `warnings` 弹窗提示用户，确保用户知情后再继续任务。
 #[tauri::command]
 pub fn normalize_input_paths(paths: Vec<String>) -> Result<NormalizePathResult, String> {
     normalize_input_paths_impl(paths).map_err(|e| e.to_string())
@@ -38,6 +43,7 @@ fn normalize_input_paths_impl(paths: Vec<String>) -> AppResult<NormalizePathResu
         normalized.push(c);
     }
 
+    // 先按深度升序，再用"父目录覆盖"规则过滤子目录（父目录一定先到 final_paths）。
     normalized.sort_by_key(|p| p.components().count());
     let mut final_paths: Vec<PathBuf> = vec![];
 

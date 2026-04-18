@@ -1,3 +1,10 @@
+/**
+ * 去重任务结果的前端状态管理。
+ *
+ * 订阅 `task_result_partial` / `task_completed` / `move_report_ready`
+ * 三类事件，把后端增量推送汇入 `resultGroups`。
+ */
+
 import { defineStore } from "pinia";
 import { onEvent } from "../services/tauri";
 import { startDedupTask, applyMoveAction } from "../services/task";

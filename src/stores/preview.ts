@@ -1,3 +1,5 @@
+/** 文件预览的前端状态管理（悬浮面板使用）。 */
+
 import { defineStore } from "pinia";
 import type { PreviewPayload } from "../types/preview";
 import { requestPreview } from "../services/preview";

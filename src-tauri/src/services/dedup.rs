@@ -1,19 +1,17 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 use tokio::sync::mpsc;
 use walkdir::WalkDir;
 
 use crate::{
     app_state::{AppState, TaskRuntime},
     config::{HASH_QUEUE_SIZE, PARTIAL_BATCH_SIZE, PAUSE_SLEEP_MS},
-    db::{hash_repo, settings_repo},
+    constants::{hash_entry_status, keep_policy, log_level, stages},
+    db::hash_repo,
     error::AppResult,
-    models::{
-        DedupConfig, DuplicateGroup, FileEntry, HashIndexEntry, TaskLogPayload,
-        TaskProgressPayload, TaskStatus,
-    },
-    services::record,
+    models::{DedupConfig, DuplicateGroup, FileEntry, HashIndexEntry, TaskStatus},
+    services::{events, op_pipeline::resolve_thread_count},
     utils::hash::hash_file_blake3,
     utils::path::to_extended_length_path,
 };
@@ -23,7 +21,7 @@ struct ScanItem {
     path: PathBuf,
     size: u64,
     mtime: i64,
-    ctime: i64, // 创建时间
+    ctime: i64,
 }
 
 #[derive(Clone)]
@@ -32,37 +30,7 @@ struct HashItem {
     path: PathBuf,
     size: u64,
     mtime: i64,
-    ctime: i64, // 创建时间
-}
-
-fn emit_log(app: &AppHandle, task_id: &str, level: &str, message: &str, file_path: Option<String>) {
-    let _ = app.emit(
-        "task_log",
-        TaskLogPayload {
-            task_id: task_id.to_string(),
-            level: level.to_string(),
-            message: message.to_string(),
-            file_path,
-        },
-    );
-}
-
-fn emit_progress(app: &AppHandle, task_id: &str, stage: &str, processed: usize, total: usize) {
-    let percent = if total == 0 {
-        0.0
-    } else {
-        (processed as f64 / total as f64) * 100.0
-    };
-    let _ = app.emit(
-        "task_progress",
-        TaskProgressPayload {
-            task_id: task_id.to_string(),
-            stage: stage.to_string(),
-            processed,
-            total,
-            percent,
-        },
-    );
+    ctime: i64,
 }
 
 async fn pause_point(runtime: &TaskRuntime) {
@@ -71,6 +39,17 @@ async fn pause_point(runtime: &TaskRuntime) {
     }
 }
 
+/// 去重任务主流程：扫描 → 并发哈希 → 流式分组 → 应用策略 → 发事件。
+///
+/// # 并发模型
+/// - 扫描阶段 `spawn_blocking` 读取 metadata 并按 size 预过滤；
+/// - 哈希阶段通过 `tokio::sync::Semaphore` 限制同时进行的 BLAKE3 任务数，
+///   许可数 = 用户设置 `thread_count × 2`（0 → 全部 CPU 核心 × 2）；
+/// - 结果通过 `mpsc` 通道汇入主任务，边收边分组以降低峰值内存。
+///
+/// # 取消 / 暂停
+/// 扫描阶段只响应取消；哈希调度阶段同时响应取消和暂停（已入队的哈希任务
+/// 会跑完，不再提交新任务）。
 pub async fn run_dedup(
     app: AppHandle,
     app_state: Arc<AppState>,
@@ -79,48 +58,24 @@ pub async fn run_dedup(
     config: DedupConfig,
     runtime: Arc<TaskRuntime>,
 ) -> AppResult<()> {
-    {
-        let mut s = runtime.status.lock().unwrap();
-        *s = TaskStatus::Running;
-    }
-    let _ = app.emit(
-        "task_state_changed",
-        serde_json::json!({ "taskId": task_id, "status": "Running" }),
-    );
+    runtime.set_status(TaskStatus::Running);
+    events::emit_state_changed(&app, &task_id, "Running");
 
     // ---------------------------------------------------------
     // 阶段1：扫描 + 哈希 流水线
-    // 扫描线程发现文件后，立即投入 spawn_blocking 做哈希
-    // 所有哈希任务并发执行，结果通过 result_tx 汇聚
     // ---------------------------------------------------------
     let (result_tx, mut result_rx) = mpsc::channel::<HashItem>(HASH_QUEUE_SIZE);
 
-    // 用于统计进度的原子计数
     let scan_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let hash_done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    // 扫描完成后，hash_total 才确定；先用 AtomicUsize 暂存
     let hash_total = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    // 判断是否需要对所有文件哈希（而不仅限于 size 重复的候选）
     let need_all_hash = config.save_record_enabled || config.use_last_record_enabled;
 
-    // 用 semaphore 限制并发哈希任务数量，防止瞬间开太多 blocking 线程
-    // 从用户设置读取核心数配置，0 = 自动使用全部可用核心
-    let concurrency = {
-        let thread_count = settings_repo::get_settings(&app_state.db_path)
-            .map(|s| s.thread_count)
-            .unwrap_or(0);
-        if thread_count > 0 {
-            (thread_count as usize).min(num_cpus::get()).max(1) * 2
-        } else {
-            num_cpus::get().max(2) * 2
-        }
-    };
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+    // 并发度统一从用户设置读取；许可数 = 有效线程数 × 2，保证 IO wait 期间有前台任务。
+    let concurrency = resolve_thread_count(&app_state.db_path) * 2;
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency.max(2)));
 
-    // 先做一次轻量扫描收集 size 信息（非常快，只读 metadata，不哈希）
-    // 如果 need_all_hash=false，需要用 size 过滤只哈希候选文件
-    // 如果 need_all_hash=true，所有文件都要哈希，size 过滤跳过
     let scan_runtime = runtime.clone();
     let app_scan = app.clone();
     let task_id_scan = task_id.clone();
@@ -133,15 +88,12 @@ pub async fn run_dedup(
     let task_id_progress = task_id.clone();
     let paths_for_record = paths.clone();
 
-    // 扫描任务：在 spawn 中完成扫描+按需发起哈希
     let scan_handle: tokio::task::JoinHandle<Result<(), String>> = tokio::spawn(async move {
-        // 第一步：收集所有文件元数据（快速）
         let mut all_scan: Vec<ScanItem> = vec![];
-        let mut by_size: HashMap<u64, usize> = HashMap::new(); // size -> count
+        let mut by_size: HashMap<u64, usize> = HashMap::new();
 
         for root in paths {
             for entry in WalkDir::new(&root).into_iter().filter_map(|e| e.ok()) {
-                // 扫描阶段只响应取消，不响应暂停
                 if scan_runtime.is_cancelled() {
                     return Ok(());
                 }
@@ -156,10 +108,10 @@ pub async fn run_dedup(
                 let meta = match std::fs::metadata(&ep) {
                     Ok(m) => m,
                     Err(e) => {
-                        emit_log(
+                        events::emit_log(
                             &app_scan,
                             &task_id_scan,
-                            "WARN",
+                            log_level::WARN,
                             &format!("读取元数据失败: {e}"),
                             Some(p.display().to_string()),
                         );
@@ -167,7 +119,6 @@ pub async fn run_dedup(
                     }
                 };
 
-                // 获取修改时间（Windows 支持）
                 let mtime = meta
                     .modified()
                     .ok()
@@ -175,13 +126,12 @@ pub async fn run_dedup(
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
 
-                // 获取创建时间（Windows 支持）
                 let ctime = meta
                     .created()
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_secs() as i64)
-                    .unwrap_or(mtime); // 如果获取失败，使用修改时间作为后备
+                    .unwrap_or(mtime);
 
                 let size = meta.len();
                 *by_size.entry(size).or_insert(0) += 1;
@@ -195,7 +145,7 @@ pub async fn run_dedup(
                 all_scan.push(item);
 
                 let n = scan_count_c.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                emit_progress(&app_scan, &task_id_scan, "scan", n, 0);
+                events::emit_progress(&app_scan, &task_id_scan, stages::SCAN, n, 0);
             }
         }
 
@@ -203,7 +153,6 @@ pub async fn run_dedup(
             return Ok(());
         }
 
-        // 第二步：筛选需要哈希的文件，并发提交哈希任务
         let hash_inputs: Vec<ScanItem> = if need_all_hash {
             all_scan
         } else {
@@ -220,11 +169,8 @@ pub async fn run_dedup(
             if scan_runtime.is_cancelled() {
                 break;
             }
-            // 暂停点：等待恢复后才提交新任务（哈希阶段响应暂停）
-            // 已提交的哈希任务会继续执行完成
             pause_point(&scan_runtime).await;
 
-            // 用 semaphore 限流，确保不超过 concurrency 个并发哈希
             let permit = match semaphore_c.clone().acquire_owned().await {
                 Ok(p) => p,
                 Err(_) => break,
@@ -239,62 +185,57 @@ pub async fn run_dedup(
             let task_prog = task_id_progress.clone();
             let total_snap = total;
 
-            // spawn_blocking：哈希是 CPU 密集，放到 blocking 线程池
             tokio::spawn(async move {
-                let _permit = permit; // 离开作用域时自动释放 semaphore
+                let _permit = permit;
 
-                // 已提交的哈希任务不检查暂停状态，让它跑完
                 if runtime_w.is_cancelled() {
                     return;
                 }
 
-                emit_log(
+                events::emit_log(
                     &app_w,
                     &task_w,
-                    "INFO",
+                    log_level::INFO,
                     "哈希计算",
                     Some(item.path.display().to_string()),
                 );
 
                 let path_clone = item.path.clone();
-                // 在 blocking 线程中执行哈希（BLAKE3 CPU密集）
                 let hash_result =
                     tokio::task::spawn_blocking(move || hash_file_blake3(&path_clone)).await;
 
                 let hash = match hash_result {
                     Ok(Ok(h)) => h,
                     Ok(Err(e)) => {
-                        emit_log(
+                        events::emit_log(
                             &app_w,
                             &task_w,
-                            "WARN",
+                            log_level::WARN,
                             &format!("哈希失败: {e}"),
                             Some(item.path.display().to_string()),
                         );
-                        // 更新进度计数，避免前端进度卡死
                         let done =
                             hash_done_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        emit_progress(&app_prog, &task_prog, "hash", done, total_snap);
+                        events::emit_progress(&app_prog, &task_prog, stages::HASH, done, total_snap);
                         return;
                     }
                     Err(e) => {
-                        emit_log(
+                        events::emit_log(
                             &app_w,
                             &task_w,
-                            "WARN",
+                            log_level::WARN,
                             &format!("哈希任务崩溃: {e}"),
                             Some(item.path.display().to_string()),
                         );
-                        // 更新进度计数，避免前端进度卡死
                         let done =
                             hash_done_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        emit_progress(&app_prog, &task_prog, "hash", done, total_snap);
+                        events::emit_progress(&app_prog, &task_prog, stages::HASH, done, total_snap);
                         return;
                     }
                 };
 
                 let done = hash_done_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                emit_progress(&app_prog, &task_prog, "hash", done, total_snap);
+                events::emit_progress(&app_prog, &task_prog, stages::HASH, done, total_snap);
 
                 let out = HashItem {
                     hash,
@@ -306,31 +247,23 @@ pub async fn run_dedup(
                 let _ = tx.send(out).await;
             });
         }
-        // scan_handle 结束，result_tx_scan drop，配合外部 drop(result_tx) 关闭通道
         Ok(())
     });
 
-    // 外层持有的 result_tx 必须 drop，否则 result_rx 不会结束
+    // 外层持有的 result_tx 必须 drop，否则 result_rx 不会结束。
     drop(result_tx);
 
     // ---------------------------------------------------------
-    // 阶段2：流式收集 + 增量分组
-    // 边接收边分组，避免二次遍历，减少内存占用
+    // 阶段2：流式分组
     // ---------------------------------------------------------
     let mut by_hash: HashMap<String, Vec<FileEntry>> = HashMap::new();
-    // 仅在需要保存记录时才存储原始哈希数据
-    let mut hash_for_record: Vec<HashItem> = if config.save_record_enabled {
-        Vec::new()
-    } else {
-        Vec::new()
-    };
+    let mut hash_for_record: Vec<HashItem> = Vec::new();
 
     while let Some(item) = result_rx.recv().await {
         if runtime.is_cancelled() {
             break;
         }
 
-        // 直接分组，不存储原始 HashItem（除非需要保存记录）
         by_hash
             .entry(item.hash.clone())
             .or_default()
@@ -344,58 +277,47 @@ pub async fn run_dedup(
                 from_history: false,
             });
 
-        // 仅在需要保存记录时才存储原始数据
         if config.save_record_enabled {
             hash_for_record.push(item);
         }
     }
 
-    // 等待扫描+调度任务结束，并处理错误
     match scan_handle.await {
-        Ok(Ok(())) => { /* 扫描成功，继续 */ }
+        Ok(Ok(())) => {}
         Ok(Err(e)) => {
-            emit_log(&app, &task_id, "ERROR", &format!("扫描任务失败: {e}"), None);
-            let mut s = runtime.status.lock().unwrap();
-            *s = TaskStatus::Failed;
-            let _ = app.emit(
-                "task_state_changed",
-                serde_json::json!({ "taskId": task_id, "status": "Failed" }),
+            events::emit_log(
+                &app,
+                &task_id,
+                log_level::ERROR,
+                &format!("扫描任务失败: {e}"),
+                None,
             );
+            runtime.set_status(TaskStatus::Failed);
+            events::emit_state_changed(&app, &task_id, "Failed");
             return Err(crate::error::AppError::Internal(e));
         }
         Err(e) => {
             let err_msg = format!("扫描任务崩溃: {}", e);
-            emit_log(&app, &task_id, "ERROR", &err_msg, None);
-            let mut s = runtime.status.lock().unwrap();
-            *s = TaskStatus::Failed;
-            let _ = app.emit(
-                "task_state_changed",
-                serde_json::json!({ "taskId": task_id, "status": "Failed" }),
-            );
+            events::emit_log(&app, &task_id, log_level::ERROR, &err_msg, None);
+            runtime.set_status(TaskStatus::Failed);
+            events::emit_state_changed(&app, &task_id, "Failed");
             return Err(crate::error::AppError::Internal(err_msg));
         }
     }
 
     if runtime.is_cancelled() {
-        // 更新状态为 Cancelled
-        let mut s = runtime.status.lock().unwrap();
-        *s = TaskStatus::Cancelled;
-        let _ = app.emit(
-            "task_state_changed",
-            serde_json::json!({ "taskId": task_id, "status": "Cancelled" }),
-        );
+        runtime.set_status(TaskStatus::Cancelled);
+        events::emit_state_changed(&app, &task_id, "Cancelled");
         return Ok(());
     }
 
     // ---------------------------------------------------------
-    // 阶段3：应用策略、发送结果
+    // 阶段3：合并历史 + 应用策略 + 发送结果
     // ---------------------------------------------------------
-    // 加载历史记录的完整文件信息（不仅仅是哈希）
     let history_entries: HashMap<String, Vec<FileEntry>> = if config.use_last_record_enabled {
         let record_id = if let Some(rid) = config.selected_record_id.as_deref() {
             Some(rid.to_string())
         } else {
-            // 如果没有指定记录ID，获取最新的记录ID
             hash_repo::list_hash_records(&app_state.db_path)
                 .ok()
                 .and_then(|records| records.first().map(|r| r.record_id.clone()))
@@ -406,25 +328,25 @@ pub async fn run_dedup(
                 Ok(record) => {
                     let mut map: HashMap<String, Vec<FileEntry>> = HashMap::new();
                     for entry in record.entries {
-                        if entry.status == "active" {
+                        if entry.status == hash_entry_status::ACTIVE {
                             map.entry(entry.hash.clone()).or_default().push(FileEntry {
                                 abs_path: entry.file_path,
                                 size: entry.file_size,
                                 mtime: entry.mtime,
-                                ctime: entry.ctime, // 使用数据库中的 ctime
+                                ctime: entry.ctime,
                                 hash: Some(entry.hash),
                                 selected_for_move: false,
-                                from_history: true, // 标记为来自历史
+                                from_history: true,
                             });
                         }
                     }
                     map
                 }
                 Err(e) => {
-                    emit_log(
+                    events::emit_log(
                         &app,
                         &task_id,
-                        "WARN",
+                        log_level::WARN,
                         &format!("加载历史记录失败: {e}"),
                         None,
                     );
@@ -438,7 +360,6 @@ pub async fn run_dedup(
         HashMap::new()
     };
 
-    // 合并当前扫描结果和历史记录
     for (hash, history_files) in history_entries {
         by_hash.entry(hash).or_default().extend(history_files);
     }
@@ -452,20 +373,13 @@ pub async fn run_dedup(
             break;
         }
 
-        // 检查是否有历史文件和当前文件
         let has_history = files.iter().any(|f| f.from_history);
         let current_count = files.iter().filter(|f| !f.from_history).count();
         let history_count = files.iter().filter(|f| f.from_history).count();
 
-        // 决定是否保留这个分组（必须有真正的重复）
         let keep = if config.use_last_record_enabled && !config.include_current_folder_duplicates {
-            // 只显示与历史记录重复的文件：至少有1个历史文件和1个当前文件
             has_history && current_count > 0
         } else {
-            // 显示当前重复的文件或与历史记录重复的文件
-            // 当前重复：当前文件数 > 1
-            // 与历史重复：至少有1个历史文件和1个当前文件
-            // 历史内部重复：历史文件数 > 1（如果包含当前文件夹重复）
             let current_dup = current_count > 1;
             let cross_dup = has_history && current_count > 0;
             let history_dup = config.include_current_folder_duplicates && history_count > 1;
@@ -477,16 +391,13 @@ pub async fn run_dedup(
         }
 
         if config.auto_select_enabled && files.len() > 1 {
-            // 如果使用历史记录，优先保留历史文件
             if config.use_last_record_enabled && has_history {
-                // 保留所有历史文件，标记所有当前文件为待移动
                 for f in files.iter_mut() {
                     f.selected_for_move = !f.from_history;
                 }
             } else {
-                // 使用创建时间排序，按策略保留
                 files.sort_by_key(|f| f.ctime);
-                let keep_idx = if config.keep_policy == "newest" {
+                let keep_idx = if config.keep_policy == keep_policy::NEWEST {
                     files.len() - 1
                 } else {
                     0
@@ -504,35 +415,18 @@ pub async fn run_dedup(
         };
         gid += 1;
 
-        // 只克隆一次，先放入 partial_buf
         partial_buf.push(g);
 
         if partial_buf.len() >= PARTIAL_BATCH_SIZE {
-            // 批量添加到 groups
             groups.extend(partial_buf.iter().cloned());
-            let _ = app.emit(
-                "task_result_partial",
-                serde_json::json!({
-                  "taskId": task_id,
-                  "groups": partial_buf,
-                  "done": false
-                }),
-            );
+            events::emit_result_partial(&app, &task_id, &partial_buf, false);
             partial_buf = vec![];
         }
     }
 
-    // 处理剩余的 partial_buf
     if !partial_buf.is_empty() {
         groups.extend(partial_buf.iter().cloned());
-        let _ = app.emit(
-            "task_result_partial",
-            serde_json::json!({
-              "taskId": task_id,
-              "groups": partial_buf,
-              "done": false
-            }),
-        );
+        events::emit_result_partial(&app, &task_id, &partial_buf, false);
     }
 
     {
@@ -540,14 +434,9 @@ pub async fn run_dedup(
         lock.insert(task_id.clone(), groups.clone());
     }
 
-    // 在保存记录前检查取消状态
     if runtime.is_cancelled() {
-        let mut s = runtime.status.lock().unwrap();
-        *s = TaskStatus::Cancelled;
-        let _ = app.emit(
-            "task_state_changed",
-            serde_json::json!({ "taskId": task_id, "status": "Cancelled" }),
-        );
+        runtime.set_status(TaskStatus::Cancelled);
+        events::emit_state_changed(&app, &task_id, "Cancelled");
         return Ok(());
     }
 
@@ -560,7 +449,7 @@ pub async fn run_dedup(
                 file_size: x.size,
                 mtime: x.mtime,
                 ctime: x.ctime,
-                status: "active".to_string(),
+                status: hash_entry_status::ACTIVE.to_string(),
             })
             .collect();
 
@@ -569,28 +458,34 @@ pub async fn run_dedup(
             .clone()
             .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
 
-        match record::save_hash_record(&app_state.db_path, &name, &paths_for_record, &entries) {
+        match hash_repo::insert_hash_record(
+            &app_state.db_path,
+            &name,
+            &paths_for_record,
+            &entries,
+            chrono::Local::now().timestamp(),
+        ) {
             Ok(record_id) => {
-                emit_log(
+                events::emit_log(
                     &app,
                     &task_id,
-                    "INFO",
+                    log_level::INFO,
                     &format!("保存记录成功: {} ({}条)", name, entries.len()),
                     None,
                 );
-                emit_log(
+                events::emit_log(
                     &app,
                     &task_id,
-                    "INFO",
+                    log_level::INFO,
                     &format!("记录ID: {}", record_id),
                     None,
                 );
             }
             Err(e) => {
-                emit_log(
+                events::emit_log(
                     &app,
                     &task_id,
-                    "ERROR",
+                    log_level::ERROR,
                     &format!("保存记录失败: {}", e),
                     None,
                 );
@@ -598,27 +493,11 @@ pub async fn run_dedup(
         }
     }
 
-    {
-        let mut s = runtime.status.lock().unwrap();
-        *s = TaskStatus::Completed;
-    }
+    runtime.set_status(TaskStatus::Completed);
 
-    let _ = app.emit(
-        "task_result_partial",
-        serde_json::json!({
-          "taskId": task_id,
-          "groups": [],
-          "done": true
-        }),
-    );
-    let _ = app.emit(
-        "task_state_changed",
-        serde_json::json!({ "taskId": task_id, "status": "Completed" }),
-    );
-    let _ = app.emit(
-        "task_completed",
-        serde_json::json!({ "taskId": task_id, "groups": groups }),
-    );
+    events::emit_result_partial(&app, &task_id, &[], true);
+    events::emit_state_changed(&app, &task_id, "Completed");
+    events::emit_task_completed(&app, &task_id, &groups);
 
     Ok(())
 }

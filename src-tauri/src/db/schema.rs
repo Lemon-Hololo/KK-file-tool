@@ -1,9 +1,21 @@
+//! SQLite schema 初始化与增量列迁移。
+//!
+//! 采用 `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN`（忽略重复
+//! 列错误）的轻量迁移策略：没有版本号表，也没有回滚，适合单用户桌面应用的
+//! schema 演进节奏。SQLite 连接打开时启用 WAL + 外键约束。
+
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::models::AppSettings;
 
+/// 初始化（或迁移）数据库 schema；幂等。
+///
+/// - 开启 `journal_mode=WAL`、`foreign_keys=ON`；
+/// - 创建所有业务表与索引（`IF NOT EXISTS`）；
+/// - 保证 `app_settings` 至少有一行；
+/// - 对历史库补列：`app_settings.thread_count`。
 pub fn init_schema(db_path: &Path) -> Result<(), String> {
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
 
@@ -70,7 +82,7 @@ pub fn init_schema(db_path: &Path) -> Result<(), String> {
     );
     CREATE INDEX IF NOT EXISTS idx_move_report_items_report_id ON move_report_items(report_id);
 
-    -- suffix change records
+    -- 后缀修改记录（op_record_repo 的一个实例）
     CREATE TABLE IF NOT EXISTS suffix_change_records (
       record_id TEXT PRIMARY KEY,
       record_name TEXT NOT NULL,
@@ -96,6 +108,32 @@ pub fn init_schema(db_path: &Path) -> Result<(), String> {
     CREATE INDEX IF NOT EXISTS idx_suffix_items_record_id ON suffix_change_items(record_id);
     CREATE INDEX IF NOT EXISTS idx_suffix_items_old_path ON suffix_change_items(old_path);
     CREATE INDEX IF NOT EXISTS idx_suffix_items_new_path ON suffix_change_items(new_path);
+
+    -- Mod 工具（rename / organize）共享记录（op_record_repo 的另一个实例）
+    CREATE TABLE IF NOT EXISTS mod_op_records (
+      record_id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      record_name TEXT NOT NULL,
+      source_paths TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      rollback_status TEXT NOT NULL DEFAULT 'applied'
+    );
+
+    CREATE TABLE IF NOT EXISTS mod_op_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      record_id TEXT NOT NULL,
+      old_path TEXT NOT NULL,
+      new_path TEXT NOT NULL,
+      apply_success INTEGER NOT NULL DEFAULT 0,
+      apply_error TEXT NULL,
+      rollback_success INTEGER NULL,
+      rollback_error TEXT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (record_id) REFERENCES mod_op_records(record_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mod_op_items_record_id ON mod_op_items(record_id);
+    CREATE INDEX IF NOT EXISTS idx_mod_op_records_kind ON mod_op_records(kind);
     "#,
     )
     .map_err(|e| e.to_string())?;
@@ -108,22 +146,22 @@ pub fn init_schema(db_path: &Path) -> Result<(), String> {
     if exists.is_none() {
         let d = AppSettings::default();
         conn.execute(
-      r#"INSERT INTO app_settings
-      (id, keep_policy, move_target_path, save_record_enabled, use_last_record_enabled, include_current_folder_duplicates, theme_mode)
-      VALUES (1, ?, ?, ?, ?, ?, ?)"#,
-      params![
-        d.keep_policy,
-        d.move_target_path,
-        d.save_record_enabled as i32,
-        d.use_last_record_enabled as i32,
-        d.include_current_folder_duplicates as i32,
-        d.theme_mode
-      ],
-    )
-    .map_err(|e| e.to_string())?;
+            r#"INSERT INTO app_settings
+            (id, keep_policy, move_target_path, save_record_enabled, use_last_record_enabled, include_current_folder_duplicates, theme_mode)
+            VALUES (1, ?, ?, ?, ?, ?, ?)"#,
+            params![
+                d.keep_policy,
+                d.move_target_path,
+                d.save_record_enabled as i32,
+                d.use_last_record_enabled as i32,
+                d.include_current_folder_duplicates as i32,
+                d.theme_mode
+            ],
+        )
+        .map_err(|e| e.to_string())?;
     }
 
-    // 迁移：新增 thread_count 列（已存在时忽略 duplicate column 错误）
+    // 历史库补列：新增 thread_count。已存在时 SQLite 返回 "duplicate column" 错误，可忽略。
     let _ = conn.execute(
         "ALTER TABLE app_settings ADD COLUMN thread_count INTEGER NOT NULL DEFAULT 0",
         [],

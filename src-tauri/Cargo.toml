@@ -42,3 +42,4 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 
 zip = "8.1.0"
 image = "0.25.9"
+quick-xml = "0.36"

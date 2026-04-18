@@ -18,9 +18,8 @@
     "allowSyntheticDefaultImports": true,
 
     "skipLibCheck": true,
-    "baseUrl": ".",
     "paths": {
-      "@/*": ["src/*"]
+      "@/*": ["./src/*"]
     },
 
     "types": ["vite/client"]

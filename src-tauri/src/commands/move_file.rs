@@ -1,23 +1,30 @@
+//! 去重结果移动命令。
+
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use chrono::Local;
+use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
+    constants::events,
     db::{move_repo, settings_repo},
     models::{MoveActionResponse, MoveReport, MoveSummary},
     services::move_file,
     utils::path::to_extended_length_path,
 };
 
+/// 用户未指定目标目录且设置里也没配置时使用的默认移动目录：
+/// `<exe 同级>/temp_moved_files`。
 fn default_move_dir() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let parent = exe.parent().ok_or("无法获取程序目录")?;
     Ok(parent.join("temp_moved_files").display().to_string())
 }
 
+/// 预估移动：目标目录 + 选中文件数 + 总字节数；不执行。
 #[tauri::command]
 pub fn get_move_summary(
     selected_files: Vec<String>,
@@ -44,6 +51,8 @@ pub fn get_move_summary(
     })
 }
 
+/// 执行移动：把 `selected_files` 移动到 `<target_dir>/<task_id>/`，写入报告，
+/// 更新内存中的重复组，发送 `move_report_ready` 事件。
 #[tauri::command]
 pub fn apply_move_action(
     app: AppHandle,
@@ -55,7 +64,8 @@ pub fn apply_move_action(
     let target_dir = match move_target_path {
         Some(v) if !v.trim().is_empty() => v,
         _ => {
-            let settings = settings_repo::get_settings(&state.db_path).map_err(|e| e.to_string())?;
+            let settings =
+                settings_repo::get_settings(&state.db_path).map_err(|e| e.to_string())?;
             match settings.move_target_path {
                 Some(v) if !v.trim().is_empty() => v,
                 _ => default_move_dir()?,
@@ -87,6 +97,8 @@ pub fn apply_move_action(
     move_repo::save_move_report_and_cleanup_entries(&state.db_path, &report, &moved_paths)
         .map_err(|e| e.to_string())?;
 
+    // 更新内存中的任务结果：把已成功移动的文件从 groups 里剔除，
+    // 仅剩 1 个文件的组也移除（不再算重复）。
     let updated_groups = {
         let moved_set: HashSet<String> = moved_paths.into_iter().collect();
         let mut task_map = state.task_results.lock().unwrap();
@@ -100,11 +112,11 @@ pub fn apply_move_action(
     };
 
     let _ = app.emit(
-        "move_report_ready",
-        serde_json::json!({
-          "taskId": task_id,
-          "report": report,
-          "updatedGroups": updated_groups
+        events::MOVE_REPORT_READY,
+        json!({
+            "taskId": task_id,
+            "report": report,
+            "updatedGroups": updated_groups,
         }),
     );
 

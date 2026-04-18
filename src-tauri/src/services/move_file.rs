@@ -1,39 +1,27 @@
+//! 去重后"移动重复文件"的执行层。
+//!
+//! 仅负责按目标目录批量 rename 文件，统计成功/失败条目；持久化为
+//! `move_reports` 的工作在 [`crate::commands::move_file`] 调用后完成。
+
 use std::path::{Path, PathBuf};
 
 use crate::{
     models::{MoveFailureItem, MoveSuccessItem},
-    utils::path::to_extended_length_path,
+    utils::{filename::resolve_conflict, path::to_extended_length_path},
 };
 
+/// `move_selected_files` 的聚合结果。
 pub struct MoveResult {
     pub success_items: Vec<MoveSuccessItem>,
     pub failed_items: Vec<MoveFailureItem>,
     pub released_bytes: u64,
 }
 
-/// Windows 重名策略：name.ext -> name (1).ext
-fn resolve_conflict_name(dst_dir: &Path, original_name: &str) -> PathBuf {
-    let mut stem = original_name.to_string();
-    let mut ext = String::new();
-
-    if let Some(pos) = original_name.rfind('.') {
-        if pos > 0 {
-            stem = original_name[..pos].to_string();
-            ext = original_name[pos..].to_string();
-        }
-    }
-
-    let mut idx = 1usize;
-    loop {
-        let candidate = dst_dir.join(format!("{} ({}){}", stem, idx, ext));
-        let ec = to_extended_length_path(&candidate);
-        if !ec.exists() {
-            return candidate;
-        }
-        idx += 1;
-    }
-}
-
+/// 把 `selected_files` 全部移动到 `target_dir`；命名冲突通过
+/// [`resolve_conflict`] 追加 ` (N)` 后缀。
+///
+/// 源文件缺失 / metadata 读失败 / 文件名非法 / rename 失败都记录为
+/// `failed_items`，不中断批次。
 pub fn move_selected_files(target_dir: &Path, selected_files: &[String]) -> MoveResult {
     let target_ext = to_extended_length_path(target_dir);
     let _ = std::fs::create_dir_all(target_ext);
@@ -79,13 +67,8 @@ pub fn move_selected_files(target_dir: &Path, selected_files: &[String]) -> Move
             }
         };
 
-        let mut dst = target_dir.join(&file_name);
-        let mut dst_ext = to_extended_length_path(&dst);
-
-        if dst_ext.exists() {
-            dst = resolve_conflict_name(target_dir, &file_name);
-            dst_ext = to_extended_length_path(&dst);
-        }
+        let (dst, _conflicted) = resolve_conflict(target_dir.join(&file_name));
+        let dst_ext = to_extended_length_path(&dst);
 
         match std::fs::rename(&src_ext, &dst_ext) {
             Ok(_) => {

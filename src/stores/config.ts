@@ -1,3 +1,10 @@
+/**
+ * 应用设置与数据库路径信息的前端状态管理。
+ *
+ * 设置加载时同步到 `useTheme` composable，保证主题立即切换；
+ * 保存同步写入 SQLite。
+ */
+
 import { defineStore } from "pinia";
 import type { AppSettings, DbPathInfo } from "../types/settings";
 import { getSettings, saveSettings, setThemeMode, getDbInfo, setCustomDbPath, deleteDatabase, getCpuCount } from "../services/settings";

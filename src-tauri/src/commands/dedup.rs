@@ -1,14 +1,20 @@
+//! 去重任务启动命令。
+
 use std::sync::Arc;
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use crate::{
     app_state::{AppState, TaskRuntime},
     models::DedupConfig,
-    services::dedup,
+    services::{dedup, events},
 };
 
+/// 启动一次去重任务；把 `TaskRuntime` 注册进 `AppState.tasks` 后立即返回 `task_id`。
+///
+/// 后续通过 `pause_task` / `resume_task` / `stop_task` 控制，结果通过
+/// `task_log` / `task_progress` / `task_result_partial` / `task_completed` 事件推送。
 #[tauri::command]
 pub async fn start_dedup_task(
     app: AppHandle,
@@ -22,11 +28,7 @@ pub async fn start_dedup_task(
 
     let task_id = Uuid::new_v4().to_string();
     let runtime = Arc::new(TaskRuntime::new());
-
-    {
-        let mut tasks = state.tasks.lock().unwrap();
-        tasks.insert(task_id.clone(), runtime.clone());
-    }
+    state.insert_task(task_id.clone(), runtime.clone());
 
     let state_clone = state.inner().clone();
     let app_clone = app.clone();
@@ -35,7 +37,7 @@ pub async fn start_dedup_task(
     tauri::async_runtime::spawn(async move {
         let result = dedup::run_dedup(
             app_clone.clone(),
-            state_clone.clone(),
+            state_clone,
             task_id_clone.clone(),
             paths,
             config,
@@ -44,14 +46,8 @@ pub async fn start_dedup_task(
         .await;
 
         if let Err(err) = result {
-            let _ = app_clone.emit(
-                "task_state_changed",
-                serde_json::json!({ "taskId": task_id_clone, "status": "Failed" }),
-            );
-            let _ = app_clone.emit(
-                "task_failed",
-                serde_json::json!({ "taskId": task_id_clone, "message": err.to_string() }),
-            );
+            events::emit_state_changed(&app_clone, &task_id_clone, "Failed");
+            events::emit_task_failed(&app_clone, &task_id_clone, &err.to_string());
         }
     });
 

@@ -1,3 +1,8 @@
+//! 哈希记录（`hash_records` / `hash_entries`）的 CRUD。
+//!
+//! 与 `op_record_repo` 的"可回滚操作记录"不同，哈希记录是只读索引，
+//! 没有 apply/rollback 语义；故单独维护一个 repo。
+
 use std::{collections::HashSet, path::Path};
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -11,6 +16,7 @@ fn conn(db_path: &Path) -> AppResult<Connection> {
     Connection::open(db_path).map_err(|e| AppError::Db(e.to_string()))
 }
 
+/// 事务写入一条记录 + 其下所有 entries。返回新生成的 `record_id`。
 pub fn insert_hash_record(
     db_path: &Path,
     record_name: &str,
@@ -51,6 +57,7 @@ pub fn insert_hash_record(
     Ok(record_id)
 }
 
+/// 列出所有哈希记录的摘要（按创建时间降序，不含 entries）。
 pub fn list_hash_records(db_path: &Path) -> AppResult<Vec<HashIndexRecordSummary>> {
     let conn = conn(db_path)?;
     let mut stmt = conn.prepare(
@@ -82,6 +89,7 @@ pub fn list_hash_records(db_path: &Path) -> AppResult<Vec<HashIndexRecordSummary
     Ok(out)
 }
 
+/// 读取单条记录的完整详情（含所有 entries）。
 pub fn load_hash_record(db_path: &Path, record_id: &str) -> AppResult<HashIndexRecord> {
     let conn = conn(db_path)?;
 
@@ -103,7 +111,9 @@ pub fn load_hash_record(db_path: &Path, record_id: &str) -> AppResult<HashIndexR
             file_path: r.get(1)?,
             file_size: r.get::<_, i64>(2)? as u64,
             mtime: r.get(3)?,
-            ctime: r.get::<_, Option<i64>>(4)?.unwrap_or_else(|| r.get::<_, i64>(3).unwrap_or(0)),
+            ctime: r
+                .get::<_, Option<i64>>(4)?
+                .unwrap_or_else(|| r.get::<_, i64>(3).unwrap_or(0)),
             status: r.get(5)?,
         })
     })?;
@@ -122,6 +132,7 @@ pub fn load_hash_record(db_path: &Path, record_id: &str) -> AppResult<HashIndexR
     })
 }
 
+/// 更新记录名；调用方确保 `new_name` 非空。
 pub fn rename_hash_record(db_path: &Path, record_id: &str, new_name: &str) -> AppResult<()> {
     let conn = conn(db_path)?;
     conn.execute(
@@ -131,6 +142,7 @@ pub fn rename_hash_record(db_path: &Path, record_id: &str, new_name: &str) -> Ap
     Ok(())
 }
 
+/// 事务：删除主表 + 关联 entries。
 pub fn delete_hash_record(db_path: &Path, record_id: &str) -> AppResult<()> {
     let mut conn = conn(db_path)?;
     let tx = conn.transaction()?;
@@ -146,6 +158,7 @@ pub fn delete_hash_record(db_path: &Path, record_id: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// 从指定记录（或最新一条）加载"active"状态的哈希集合，用于跨会话去重。
 pub fn load_active_hash_set(
     db_path: &Path,
     selected_record_id: Option<&str>,
