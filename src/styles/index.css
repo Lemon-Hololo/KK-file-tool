@@ -1,0 +1,200 @@
+/* ===========================================================
+ * FileFlow Desktop · 全局样式层
+ *
+ * 只负责：设计令牌（tokens）、根布局基线、Element Plus 的少量对齐。
+ * 业务样式放在各自组件的 <style scoped> 里；任何"跨组件要生效的样式"
+ * 都靠 CSS 变量驱动，不再靠 :deep() 覆写别人的内部类。
+ * =========================================================== */
+
+:root {
+  /* 间距系统 —— 所有 padding/gap 都从这里挑，不再写 13 / 18 / 21 这种奇数。 */
+  --ff-space-1: 4px;
+  --ff-space-2: 8px;
+  --ff-space-3: 12px;
+  --ff-space-4: 16px;
+  --ff-space-5: 20px;
+  --ff-space-6: 24px;
+  --ff-space-8: 32px;
+
+  /* 圆角：sm 给 button/input，md 给 panel，lg 给 dialog/drawer。 */
+  --ff-radius-sm: 6px;
+  --ff-radius-md: 10px;
+  --ff-radius-lg: 14px;
+
+  /* 字号：app 标准 13px，header 14~16，meta 11~12。 */
+  --ff-font-xs: 11px;
+  --ff-font-sm: 12px;
+  --ff-font-md: 13px;
+  --ff-font-lg: 14px;
+  --ff-font-xl: 16px;
+
+  --ff-line-sm: 1.4;
+  --ff-line-md: 1.55;
+
+  /* 亮色面板：柔和背景对比，边框几乎无感，靠 shadow + 底色层级感。 */
+  --ff-bg-app: #f4f5f8;
+  --ff-bg-panel: #ffffff;
+  --ff-bg-panel-hover: #f8f9fc;
+  --ff-bg-muted: #eef0f5;
+  --ff-bg-subtle: #f6f7fa;
+  --ff-bg-header: #fbfbfd;
+  --ff-bg-code: #f4f4f7;
+
+  --ff-border-subtle: rgba(15, 23, 42, 0.06);
+  --ff-border: rgba(15, 23, 42, 0.10);
+  --ff-border-strong: rgba(15, 23, 42, 0.16);
+
+  --ff-text-primary: #13161e;
+  --ff-text-secondary: #4a5262;
+  --ff-text-muted: #8a92a2;
+
+  --ff-accent: #4b6fee;
+  --ff-accent-hover: #3c5ee0;
+  --ff-accent-soft: rgba(75, 111, 238, 0.12);
+  --ff-accent-strong: rgba(75, 111, 238, 0.2);
+
+  --ff-success: #17a873;
+  --ff-success-soft: rgba(23, 168, 115, 0.12);
+  --ff-warning: #e69529;
+  --ff-warning-soft: rgba(230, 149, 41, 0.12);
+  --ff-danger: #e24c4c;
+  --ff-danger-soft: rgba(226, 76, 76, 0.12);
+
+  --ff-shadow-xs: 0 1px 1px rgba(15, 23, 42, 0.04);
+  --ff-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 1px rgba(15, 23, 42, 0.03);
+  --ff-shadow-md: 0 4px 14px rgba(15, 23, 42, 0.06), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --ff-shadow-lg: 0 12px 36px rgba(15, 23, 42, 0.10), 0 2px 6px rgba(15, 23, 42, 0.04);
+}
+
+html.dark {
+  --ff-bg-app: #0c0e14;
+  --ff-bg-panel: #161922;
+  --ff-bg-panel-hover: #1b1f2a;
+  --ff-bg-muted: #1f2330;
+  --ff-bg-subtle: #14171f;
+  --ff-bg-header: #181b24;
+  --ff-bg-code: #10131a;
+
+  --ff-border-subtle: rgba(255, 255, 255, 0.05);
+  --ff-border: rgba(255, 255, 255, 0.09);
+  --ff-border-strong: rgba(255, 255, 255, 0.16);
+
+  --ff-text-primary: #e6e8ee;
+  --ff-text-secondary: #a5acba;
+  --ff-text-muted: #6a7283;
+
+  --ff-accent: #6d8bf5;
+  --ff-accent-hover: #829bf7;
+  --ff-accent-soft: rgba(109, 139, 245, 0.16);
+  --ff-accent-strong: rgba(109, 139, 245, 0.28);
+
+  --ff-success: #3dc28b;
+  --ff-success-soft: rgba(61, 194, 139, 0.16);
+  --ff-warning: #f0a550;
+  --ff-warning-soft: rgba(240, 165, 80, 0.16);
+  --ff-danger: #ef6a6a;
+  --ff-danger-soft: rgba(239, 106, 106, 0.16);
+
+  --ff-shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.25);
+  --ff-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --ff-shadow-md: 0 6px 22px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+  --ff-shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+/* ---- 根元素与 body ----
+ * html/body/#app 都锁死视口高度 + 取消默认外边距。body 默认 8px margin 叠上
+ * 任何 `height: 100vh` 的子元素都会让文档高出视口 → html 冒出一条没人要的
+ * 外层滚动条。overflow: hidden 让所有滚动只发生在业务容器内部。 */
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+  color: var(--ff-text-primary);
+  background: var(--ff-bg-app);
+  font-size: var(--ff-font-md);
+  line-height: var(--ff-line-md);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'PingFang SC', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* ---- 统一的浅滚动条（仅对走 overflow 的块生效） ----
+ * 只给业务滚动容器一个低调的滚动条样式，不干扰 Element Plus 内置的 el-scrollbar。 */
+.ff-scroll {
+  scrollbar-gutter: stable;
+}
+.ff-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.ff-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ff-scroll::-webkit-scrollbar-thumb {
+  background: var(--ff-border-strong);
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.ff-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--ff-text-muted) 40%, transparent);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+/* ---- Element Plus 少量对齐 ----
+ * 只做必要的圆角 / 主色同步，避免把自己的设计令牌和 EP 的视觉语言劈叉。 */
+.el-button {
+  --el-border-radius-base: var(--ff-radius-sm);
+}
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  --el-border-radius-base: var(--ff-radius-sm);
+}
+.el-dialog {
+  --el-dialog-border-radius: var(--ff-radius-lg);
+}
+.el-drawer {
+  --el-drawer-border-radius: 0;
+}
+.el-tag {
+  --el-border-radius-base: var(--ff-radius-sm);
+}
+
+/* ---- 通用辅助类 ---- */
+.ff-text-muted {
+  color: var(--ff-text-muted);
+}
+.ff-text-secondary {
+  color: var(--ff-text-secondary);
+}
+.ff-hstack {
+  display: flex;
+  align-items: center;
+  gap: var(--ff-space-2);
+}
+.ff-vstack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ff-space-2);
+}
+.ff-grow {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}

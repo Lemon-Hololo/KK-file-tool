@@ -10,7 +10,10 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{
     constants::events,
-    models::{DuplicateGroup, ModScanCompletedPayload, TaskLogPayload, TaskProgressPayload},
+    models::{
+        DuplicateGroup, ModDuplicatePartialPayload, ModScanCompletedPayload,
+        ModVersionPartialPayload, TaskLogPayload, TaskProgressPayload,
+    },
 };
 
 pub fn emit_log(
@@ -79,4 +82,12 @@ pub fn emit_task_completed(app: &AppHandle, task_id: &str, groups: &[DuplicateGr
 
 pub fn emit_mod_scan_completed(app: &AppHandle, payload: &ModScanCompletedPayload) {
     let _ = app.emit(events::MOD_SCAN_COMPLETED, payload);
+}
+
+pub fn emit_mod_duplicate_partial(app: &AppHandle, payload: &ModDuplicatePartialPayload) {
+    let _ = app.emit(events::MOD_DUPLICATE_PARTIAL, payload);
+}
+
+pub fn emit_mod_version_partial(app: &AppHandle, payload: &ModVersionPartialPayload) {
+    let _ = app.emit(events::MOD_VERSION_PARTIAL, payload);
 }

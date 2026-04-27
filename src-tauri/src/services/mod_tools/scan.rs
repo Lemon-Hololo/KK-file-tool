@@ -12,11 +12,11 @@ use walkdir::WalkDir;
 
 use crate::{
     app_state::{AppState, TaskRuntime},
-    constants::{log_level, stages},
+    constants::stages,
     models::{ModScanCompletedPayload, ModScanMatch, TaskStatus},
-    services::events,
     services::mod_tools::zipmod::{is_zipmod, read_manifest_from_zip},
-    services::op_pipeline::resolve_thread_count,
+    services::op_pipeline::{resolve_io_concurrency_multiplier, resolve_thread_count},
+    services::{events, logging::TaskLogContext},
     utils::path::{to_extended_length_path, to_user_friendly_path},
 };
 
@@ -35,14 +35,9 @@ pub async fn run_scan(
 
     runtime.set_status(TaskStatus::Running);
     events::emit_state_changed(&app, &task_id, "Running");
+    let log = TaskLogContext::new(&app, &task_id);
 
-    events::emit_log(
-        &app,
-        &task_id,
-        log_level::INFO,
-        &format!("开始扫描，关键字: {keyword_trim}"),
-        None,
-    );
+    log.info(&format!("开始扫描，关键字: {keyword_trim}"));
 
     // 1) 收集候选文件
     let mut candidates: Vec<PathBuf> = vec![];
@@ -72,12 +67,14 @@ pub async fn run_scan(
     events::emit_progress(&app, &task_id, stages::MOD_SCAN, 0, total);
 
     // 2) 并行读取 manifest；semaphore 控并发（IO + 少量 CPU）
-    // 与 dedup 一致：用户设置的核心数 × 2 作为 IO 并发度，未配置时用 num_cpus
-    let concurrency = (resolve_thread_count(&app_state.db_path) * 2).max(2);
+    // 与 dedup 一致：有效线程数 × 用户配置的 IO 倍率（默认 2）
+    let multiplier = resolve_io_concurrency_multiplier(&app_state.db_path);
+    let concurrency = (resolve_thread_count(&app_state.db_path) * multiplier).max(2);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
     let processed = Arc::new(AtomicUsize::new(0));
     let errors = Arc::new(AtomicUsize::new(0));
     let matches: Arc<Mutex<Vec<ModScanMatch>>> = Arc::new(Mutex::new(vec![]));
+    let log_scan = log.clone();
 
     let mut handles = Vec::with_capacity(candidates.len());
 
@@ -99,6 +96,7 @@ pub async fn run_scan(
         let errors_c = errors.clone();
         let matches_c = matches.clone();
         let total_c = total;
+        let log_c = log_scan.clone();
 
         let handle = tokio::spawn(async move {
             let _permit = permit;
@@ -107,23 +105,20 @@ pub async fn run_scan(
             }
 
             let path_for_blocking = path.clone();
-            let result = tokio::task::spawn_blocking(move || {
-                read_manifest_from_zip(&path_for_blocking)
-            })
-            .await;
+            let result =
+                tokio::task::spawn_blocking(move || read_manifest_from_zip(&path_for_blocking))
+                    .await;
 
             let path_display = to_user_friendly_path(&path);
 
             match result {
                 Ok(Ok((meta, _raw))) => {
-                    if meta.games.iter().any(|g| g.eq_ignore_ascii_case(&keyword_c)) {
-                        events::emit_log(
-                            &app_c,
-                            &task_id_c,
-                            log_level::INFO,
-                            &format!("匹配: {path_display}"),
-                            Some(path_display.clone()),
-                        );
+                    if meta
+                        .games
+                        .iter()
+                        .any(|g| g.eq_ignore_ascii_case(&keyword_c))
+                    {
+                        log_c.info_file(&format!("匹配: {path_display}"), path_display.clone());
                         let m = ModScanMatch {
                             file_path: path_display,
                             guid: meta.guid,
@@ -136,23 +131,11 @@ pub async fn run_scan(
                 }
                 Ok(Err(e)) => {
                     errors_c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    events::emit_log(
-                        &app_c,
-                        &task_id_c,
-                        log_level::WARN,
-                        &format!("读取失败: {e}"),
-                        Some(path_display),
-                    );
+                    log_c.warn_file(&format!("读取失败: {e}"), path_display);
                 }
                 Err(e) => {
                     errors_c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    events::emit_log(
-                        &app_c,
-                        &task_id_c,
-                        log_level::WARN,
-                        &format!("任务崩溃: {e}"),
-                        Some(path_display),
-                    );
+                    log_c.warn_file(&format!("任务崩溃: {e}"), path_display);
                 }
             }
 
@@ -198,6 +181,7 @@ fn emit_final(
     errors: usize,
     cancelled: bool,
 ) {
+    let log = TaskLogContext::new(app, task_id);
     if cancelled {
         runtime.set_status(TaskStatus::Cancelled);
         events::emit_state_changed(app, task_id, "Cancelled");
@@ -206,19 +190,13 @@ fn emit_final(
         events::emit_state_changed(app, task_id, "Completed");
     }
 
-    events::emit_log(
-        app,
-        task_id,
-        log_level::INFO,
-        &format!(
-            "扫描完成：匹配 {}，扫描 {}，错误 {}{}",
-            matches.len(),
-            total,
-            errors,
-            if cancelled { "（已取消）" } else { "" }
-        ),
-        None,
-    );
+    log.info(&format!(
+        "扫描完成：匹配 {}，扫描 {}，错误 {}{}",
+        matches.len(),
+        total,
+        errors,
+        if cancelled { "（已取消）" } else { "" }
+    ));
 
     events::emit_mod_scan_completed(
         app,

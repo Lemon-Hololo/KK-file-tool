@@ -1,34 +1,36 @@
-<!-- src/App.vue -->
 <script setup lang="ts">
+/**
+ * App 根：侧栏 + 主内容。
+ *
+ * # 布局责任
+ * - `.app-shell`：grid 横向三列（侧栏 | 拖拽条 | 主内容），height: 100vh。
+ * - `.app-main`：grid 纵向两行（顶部条 | 视口），min-height: 0 让 grid track 不被撑破。
+ * - `.app-viewport`：视口容器，`overflow: hidden`，**外层不做纵向滚动**；每个
+ *   路由页面自己决定内部滚动责任（TaskPage / RecordManagePage 走 flex 链
+ *   一路透传到 VirtualTable；SettingsPage 表单长所以自己 overflow-y: auto）。
+ *
+ * 侧栏宽度持久化在 localStorage；低于阈值自动吸附到图标模式 56px。
+ */
+
 import { computed, ref } from "vue";
 import { useStorage, useEventListener } from "@vueuse/core";
-import {
-  Document,
-  Setting,
-  Folder,
-  Files,
-} from "@element-plus/icons-vue";
+import { Document, Setting, Folder, Files } from "@element-plus/icons-vue";
 
-// 宽度常量
-const MIN_WIDTH = 56;   // 折叠图标模式宽度
-const MAX_WIDTH = 320;  // 最大可拖宽度
-const COLLAPSE_THRESHOLD = 100; // 低于此宽度吸附为图标模式
-const DEFAULT_WIDTH = 230;
+const MIN_WIDTH = 60;
+const MAX_WIDTH = 300;
+const COLLAPSE_THRESHOLD = 110;
+const DEFAULT_WIDTH = 220;
 
-// 持久化侧边栏宽度
 const sidebarWidth = useStorage<number>("sidebarWidth", DEFAULT_WIDTH);
-
-// 是否处于折叠（图标）模式
 const collapsed = computed(() => sidebarWidth.value <= MIN_WIDTH + 4);
 
-// 菜单配置，集中管理图标和路由
-const menuItems = [
-  { index: "/", label: "任务中心", icon: Files },
-  { index: "/settings", label: "配置中心", icon: Setting },
-  { index: "/records", label: "记录管理", icon: Folder },
+const menu = [
+  { path: "/", label: "任务中心", icon: Files },
+  { path: "/records", label: "记录管理", icon: Folder },
+  { path: "/settings", label: "配置中心", icon: Setting },
 ];
 
-// ----- 拖拽逻辑 -----
+// ---- 拖拽 ----
 const isDragging = ref(false);
 let startX = 0;
 let startWidth = 0;
@@ -37,7 +39,6 @@ function onDragStart(e: MouseEvent) {
   isDragging.value = true;
   startX = e.clientX;
   startWidth = sidebarWidth.value;
-  // 拖拽时禁止文字选中
   document.body.style.userSelect = "none";
   document.body.style.cursor = "col-resize";
 }
@@ -45,8 +46,7 @@ function onDragStart(e: MouseEvent) {
 useEventListener(document, "mousemove", (e: MouseEvent) => {
   if (!isDragging.value) return;
   const delta = e.clientX - startX;
-  const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + delta));
-  sidebarWidth.value = next;
+  sidebarWidth.value = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + delta));
 });
 
 useEventListener(document, "mouseup", () => {
@@ -54,52 +54,71 @@ useEventListener(document, "mouseup", () => {
   isDragging.value = false;
   document.body.style.userSelect = "";
   document.body.style.cursor = "";
-
-  // 低于折叠阈值时吸附到图标模式宽度
-  if (sidebarWidth.value < COLLAPSE_THRESHOLD) {
-    sidebarWidth.value = MIN_WIDTH;
-  }
+  if (sidebarWidth.value < COLLAPSE_THRESHOLD) sidebarWidth.value = MIN_WIDTH;
 });
 
-// 点击折叠图标区域展开（双击侧边栏 brand 区域切换）
 function toggleCollapse() {
   sidebarWidth.value = collapsed.value ? DEFAULT_WIDTH : MIN_WIDTH;
 }
 </script>
 
 <template>
-  <div class="app-root" :style="{ gridTemplateColumns: sidebarWidth + 'px 4px 1fr' }">
-    <!-- 侧边栏 -->
+  <div
+    class="app-shell"
+    :style="{ gridTemplateColumns: `${sidebarWidth}px 3px 1fr` }"
+  >
+    <!-- 侧栏 -->
     <aside class="app-sidebar" :class="{ 'is-collapsed': collapsed }">
-      <!-- Brand -->
-      <div class="brand" @click="toggleCollapse" :title="collapsed ? '展开侧边栏' : 'FileFlow Desktop'">
-        <el-icon :size="22">
-          <Document />
-        </el-icon>
-        <span v-show="!collapsed" class="brand-text">FileFlow Desktop</span>
-      </div>
+      <button
+        type="button"
+        class="brand"
+        :title="collapsed ? '展开' : 'FileFlow Desktop'"
+        @click="toggleCollapse"
+      >
+        <span class="brand-icon">
+          <el-icon :size="20"><Document /></el-icon>
+        </span>
+        <span v-show="!collapsed" class="brand-text">FileFlow</span>
+      </button>
 
-      <!-- 导航菜单 -->
-      <el-menu :default-active="$route.path" :collapse="collapsed" :collapse-transition="false" router>
-        <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index"
-          :title="collapsed ? item.label : ''">
-          <el-icon>
-            <component :is="item.icon" />
-          </el-icon>
-          <template #title>{{ item.label }}</template>
-        </el-menu-item>
-      </el-menu>
+      <nav class="nav">
+        <router-link
+          v-for="m in menu"
+          :key="m.path"
+          :to="m.path"
+          custom
+          v-slot="{ isActive, navigate }"
+        >
+          <button
+            type="button"
+            class="nav-item"
+            :class="{ 'is-active': isActive }"
+            :title="collapsed ? m.label : ''"
+            @click="navigate"
+          >
+            <span class="nav-icon">
+              <el-icon :size="18"><component :is="m.icon" /></el-icon>
+            </span>
+            <span v-show="!collapsed" class="nav-label">{{ m.label }}</span>
+          </button>
+        </router-link>
+      </nav>
     </aside>
 
-    <!-- 拖拽分隔条 -->
-    <div class="resize-handle" :class="{ 'is-dragging': isDragging }" @mousedown.prevent="onDragStart" />
+    <!-- 拖拽条 -->
+    <div
+      class="resize-handle"
+      :class="{ 'is-dragging': isDragging }"
+      @mousedown.prevent="onDragStart"
+    />
 
-    <!-- 主内容区 -->
+    <!-- 主体 -->
     <main class="app-main">
-      <header class="app-header">
-        <span>Windows 文件处理平台</span>
+      <header class="app-topbar">
+        <span class="topbar-title">文件处理平台</span>
+        <span class="topbar-sub">Windows · Tauri</span>
       </header>
-      <section class="app-content">
+      <section class="app-viewport">
         <router-view />
       </section>
     </main>
@@ -107,98 +126,156 @@ function toggleCollapse() {
 </template>
 
 <style scoped>
-.app-root {
+.app-shell {
   display: grid;
-  /* grid-template-columns 由 :style 动态注入 */
   height: 100vh;
   overflow: hidden;
+  background: var(--ff-bg-app);
 }
 
-/* ---- 侧边栏 ---- */
+/* ---- 侧栏 ---- */
 .app-sidebar {
-  border-right: none;
-  /* 由 resize-handle 充当分隔 */
-  overflow: hidden;
-  /* 折叠时不溢出 */
+  background: var(--ff-bg-panel);
+  border-right: 1px solid var(--ff-border-subtle);
   display: flex;
   flex-direction: column;
-  transition: none;
-  /* 拖拽时不要 transition，防止卡顿 */
+  min-width: 0;
+  overflow: hidden;
 }
 
-/* Element Plus el-menu 折叠时宽度固定为 64px，
-   我们用 MIN_WIDTH=56 + 分隔条 4px，视觉上等于 60px，够放图标 */
-.app-sidebar :deep(.el-menu) {
-  border-right: none;
-  width: 100% !important;
-  /* 覆盖 el-menu 的 inline width */
-}
-
-/* 折叠时 el-menu--collapse 默认 64px，强制跟随父宽 */
-.app-sidebar.is-collapsed :deep(.el-menu--collapse) {
-  width: 100% !important;
-}
-
-/* ---- Brand ---- */
 .brand {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: var(--ff-space-4) var(--ff-space-4);
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 14px 16px;
-  font-size: 17px;
-  font-weight: 700;
   cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  flex-shrink: 0;
+  min-height: 56px;
+  color: var(--ff-text-primary);
   user-select: none;
 }
-
 .app-sidebar.is-collapsed .brand {
   justify-content: center;
-  padding: 14px 0;
+  padding: var(--ff-space-4) 0;
 }
-
+.brand-icon {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--ff-accent-soft);
+  color: var(--ff-accent);
+  flex-shrink: 0;
+}
 .brand-text {
+  font-weight: 700;
+  font-size: var(--ff-font-xl);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--ff-space-2) var(--ff-space-2);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.nav-item {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  color: var(--ff-text-secondary);
+  padding: 8px 10px;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--ff-font-md);
+  font-weight: 500;
+  border-radius: var(--ff-radius-sm);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.app-sidebar.is-collapsed .nav-item {
+  justify-content: center;
+  padding: 8px 0;
+}
+.nav-item:hover:not(.is-active) {
+  background: var(--ff-bg-muted);
+  color: var(--ff-text-primary);
+}
+.nav-item.is-active {
+  background: var(--ff-accent-soft);
+  color: var(--ff-accent);
+}
+.nav-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.nav-label {
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---- 拖拽分隔条 ---- */
 .resize-handle {
-  width: 4px;
   cursor: col-resize;
-  background: var(--el-border-color);
+  background: var(--ff-border-subtle);
   transition: background 0.15s;
-  flex-shrink: 0;
 }
-
 .resize-handle:hover,
 .resize-handle.is-dragging {
-  background: var(--el-color-primary);
+  background: var(--ff-accent);
 }
 
-/* ---- 主内容 ---- */
+/* ---- 主体 ---- */
 .app-main {
   display: grid;
-  grid-template-rows: 54px 1fr;
-  overflow: hidden;
+  grid-template-rows: 48px 1fr;
   min-width: 0;
-  /* 防止内容撑破 grid */
+  min-height: 0;
+  overflow: hidden;
+  background: var(--ff-bg-app);
 }
 
-.app-header {
+.app-topbar {
   display: flex;
-  align-items: center;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--el-border-color);
-  color: var(--muted-text);
-  flex-shrink: 0;
+  align-items: baseline;
+  gap: var(--ff-space-3);
+  padding: 0 var(--ff-space-5);
+  border-bottom: 1px solid var(--ff-border-subtle);
+  background: var(--ff-bg-panel);
+}
+.topbar-title {
+  font-size: var(--ff-font-lg);
+  font-weight: 600;
+  color: var(--ff-text-primary);
+}
+.topbar-sub {
+  font-size: var(--ff-font-xs);
+  color: var(--ff-text-muted);
+  font-weight: 500;
 }
 
-.app-content {
-  padding: 16px;
-  overflow: auto;
+.app-viewport {
+  padding: var(--ff-space-4);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  /* 页面自己决定内部滚动 —— TaskPage 走 flex 链铺满，SettingsPage / RecordManagePage 自己开滚 */
 }
 </style>

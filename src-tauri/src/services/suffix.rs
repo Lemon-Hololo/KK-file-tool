@@ -140,10 +140,7 @@ pub fn list_suffix_records(db_path: &Path) -> AppResult<Vec<SuffixRecordSummary>
 }
 
 /// 读取单个后缀修改记录的详情。
-pub fn get_suffix_record_detail(
-    db_path: &Path,
-    record_id: &str,
-) -> AppResult<SuffixRecordDetail> {
+pub fn get_suffix_record_detail(db_path: &Path, record_id: &str) -> AppResult<SuffixRecordDetail> {
     let d = op_record_repo::get_record_detail(db_path, SUFFIX_TABLES, record_id)?;
     Ok(SuffixRecordDetail {
         summary: to_summary(d.summary),

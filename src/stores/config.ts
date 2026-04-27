@@ -7,8 +7,18 @@
 
 import { defineStore } from "pinia";
 import type { AppSettings, DbPathInfo } from "../types/settings";
-import { getSettings, saveSettings, setThemeMode, getDbInfo, setCustomDbPath, deleteDatabase, getCpuCount } from "../services/settings";
+import {
+  getSettings,
+  saveSettings as saveSettingsRemote,
+  getDbInfo,
+  setCustomDbPath,
+  deleteDatabase,
+  getCpuCount
+} from "../services/settings";
 import { useTheme } from "../composables/useTheme";
+
+let queuedSettingsSnapshot: AppSettings | null = null;
+let activeSettingsSave: Promise<void> | null = null;
 
 export const useConfigStore = defineStore("config", {
   state: () => ({
@@ -20,6 +30,16 @@ export const useConfigStore = defineStore("config", {
       includeCurrentFolderDuplicates: true,
       themeMode: "system",
       threadCount: 0,
+      // 性能
+      logMaxLength: 3000,
+      ioConcurrencyMultiplier: 2,
+      extremeRowThreshold: 20000,
+      // 预览
+      textPreviewMaxKb: 256,
+      zipPreviewMaxEntries: 5000,
+      // 工具默认值
+      modScanDefaultKeyword: "Koikatsu",
+      suffixDefaultTarget: "txt",
     } as AppSettings,
 
     dbPathInfo: null as DbPathInfo | null,
@@ -27,6 +47,7 @@ export const useConfigStore = defineStore("config", {
   }),
 
   actions: {
+    /** 从后端加载当前配置，并同步主题到本地。 */
     async loadSettings() {
       const { setThemeMode, initTheme } = useTheme();
       this.settings = await getSettings();
@@ -36,45 +57,66 @@ export const useConfigStore = defineStore("config", {
       initTheme();
     },
 
+    /** 把当前配置排队写入后端；多次快速修改会自动合并为最终一次。 */
     async saveSettings() {
-      await saveSettings(this.settings);
-
-      const { setThemeMode } = useTheme();
-      setThemeMode(this.settings.themeMode);
+      queuedSettingsSnapshot = cloneSettings(this.settings);
+      await flushQueuedSettings();
     },
 
-    async changeTheme(mode: AppSettings["themeMode"]) {
+    /** 仅本地立即切换主题；持久化交给自动保存。 */
+    applyThemeMode(mode: AppSettings["themeMode"]) {
       const { setThemeMode } = useTheme();
       this.settings.themeMode = mode;
-
-      // 1) 本地立即生效
       setThemeMode(mode);
-
-      // 2) 后端持久化
-      await setThemeModeRemote(mode);
     },
 
+    /** 读取当前 / 默认 / 自定义数据库路径。 */
     async loadDbInfo() {
       this.dbPathInfo = await getDbInfo();
     },
 
+    /** 设置自定义数据库路径，并刷新路径信息。 */
     async setCustomDbPath(path: string) {
       await setCustomDbPath(path);
       await this.loadDbInfo();
     },
 
+    /** 删除数据库并重新加载默认配置。 */
     async deleteDb() {
       await deleteDatabase();
       await this.loadSettings();
     },
 
+    /** 读取本机 CPU 核心数。 */
     async loadCpuCount() {
       this.cpuCount = await getCpuCount();
     },
   },
 });
 
-// 避免与 composable 的 setThemeMode 命名冲突
-async function setThemeModeRemote(mode: AppSettings["themeMode"]) {
-  await setThemeMode(mode);
+function cloneSettings(settings: AppSettings): AppSettings {
+  return JSON.parse(JSON.stringify(settings)) as AppSettings;
+}
+
+async function flushQueuedSettings() {
+  if (activeSettingsSave) {
+    return activeSettingsSave;
+  }
+
+  activeSettingsSave = (async () => {
+    while (queuedSettingsSnapshot) {
+      const snapshot = queuedSettingsSnapshot;
+      queuedSettingsSnapshot = null;
+      await saveSettingsRemote(snapshot);
+
+      const { setThemeMode } = useTheme();
+      setThemeMode(snapshot.themeMode);
+    }
+  })();
+
+  try {
+    await activeSettingsSave;
+  } finally {
+    activeSettingsSave = null;
+  }
 }

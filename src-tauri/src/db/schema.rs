@@ -15,7 +15,9 @@ use crate::models::AppSettings;
 /// - 开启 `journal_mode=WAL`、`foreign_keys=ON`；
 /// - 创建所有业务表与索引（`IF NOT EXISTS`）；
 /// - 保证 `app_settings` 至少有一行；
-/// - 对历史库补列：`app_settings.thread_count`。
+/// - 历史库补列：`thread_count` / `log_max_length` / `io_concurrency_multiplier` /
+///   `extreme_row_threshold` / `text_preview_max_kb` / `zip_preview_max_entries` /
+///   `mod_scan_default_keyword` / `suffix_default_target`（重复列错误忽略）。
 pub fn init_schema(db_path: &Path) -> Result<(), String> {
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
 
@@ -109,7 +111,33 @@ pub fn init_schema(db_path: &Path) -> Result<(), String> {
     CREATE INDEX IF NOT EXISTS idx_suffix_items_old_path ON suffix_change_items(old_path);
     CREATE INDEX IF NOT EXISTS idx_suffix_items_new_path ON suffix_change_items(new_path);
 
-    -- Mod 工具（rename / organize）共享记录（op_record_repo 的另一个实例）
+    -- 空文件夹清理记录（删除后可通过 create_dir_all 撤回）
+    CREATE TABLE IF NOT EXISTS empty_dir_records (
+      record_id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      record_name TEXT NOT NULL,
+      source_paths TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      rollback_status TEXT NOT NULL DEFAULT 'applied'
+    );
+
+    CREATE TABLE IF NOT EXISTS empty_dir_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      record_id TEXT NOT NULL,
+      old_path TEXT NOT NULL,
+      new_path TEXT NOT NULL,
+      apply_success INTEGER NOT NULL DEFAULT 0,
+      apply_error TEXT NULL,
+      rollback_success INTEGER NULL,
+      rollback_error TEXT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (record_id) REFERENCES empty_dir_records(record_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_empty_dir_items_record_id ON empty_dir_items(record_id);
+    CREATE INDEX IF NOT EXISTS idx_empty_dir_items_old_path ON empty_dir_items(old_path);
+
+    -- Mod 工具共享记录（op_record_repo 的另一个实例）
     CREATE TABLE IF NOT EXISTS mod_op_records (
       record_id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
@@ -161,9 +189,38 @@ pub fn init_schema(db_path: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     }
 
-    // 历史库补列：新增 thread_count。已存在时 SQLite 返回 "duplicate column" 错误，可忽略。
+    // 历史库补列：已存在时 SQLite 返回 "duplicate column" 错误，可忽略。
+    // 顺序无关紧要；DEFAULT 与 `AppSettings::Default` / `config.rs::DEFAULT_*` 保持一致。
     let _ = conn.execute(
         "ALTER TABLE app_settings ADD COLUMN thread_count INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN log_max_length INTEGER NOT NULL DEFAULT 3000",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN io_concurrency_multiplier INTEGER NOT NULL DEFAULT 2",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN extreme_row_threshold INTEGER NOT NULL DEFAULT 20000",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN text_preview_max_kb INTEGER NOT NULL DEFAULT 256",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN zip_preview_max_entries INTEGER NOT NULL DEFAULT 5000",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN mod_scan_default_keyword TEXT NOT NULL DEFAULT 'Koikatsu'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN suffix_default_target TEXT NOT NULL DEFAULT 'txt'",
         [],
     );
 

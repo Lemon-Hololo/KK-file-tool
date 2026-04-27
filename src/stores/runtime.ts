@@ -2,7 +2,8 @@ import { defineStore } from "pinia";
 import { onEvent } from "../services/tauri";
 import { pauseTask, resumeTask, stopTask } from "../services/task";
 import type { TaskLogPayload, TaskProgressPayload, TaskStatus } from "../types/common";
-import { LOG_MAX_LENGTH, LOG_FLUSH_INTERVAL } from "../constants/app";
+import { DEFAULT_LOG_MAX_LENGTH, LOG_FLUSH_INTERVAL } from "../constants/app";
+import { useConfigStore } from "./config";
 
 /**
  * 日志缓冲区（非响应式），高频 IPC 事件先写入此处，
@@ -10,6 +11,21 @@ import { LOG_MAX_LENGTH, LOG_FLUSH_INTERVAL } from "../constants/app";
  */
 let _logBuffer: TaskLogPayload[] = [];
 let _flushTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * 取当前日志上限。优先读配置中心的 `logMaxLength`；用户尚未改过（或 config
+ * store 还没初始化）时退到编译期默认。上限硬压在 50 万条防止失控。
+ */
+function currentLogCap(): number {
+  try {
+    const configStore = useConfigStore();
+    const v = configStore.settings.logMaxLength;
+    if (typeof v === "number" && v > 0) return Math.min(v, 500_000);
+  } catch {
+    /* pinia 未就绪时静默退到默认值 */
+  }
+  return DEFAULT_LOG_MAX_LENGTH;
+}
 
 export const useRuntimeStore = defineStore("runtime", {
   state: () => ({
@@ -27,6 +43,13 @@ export const useRuntimeStore = defineStore("runtime", {
   }),
 
   actions: {
+    /** 追加一条本地日志，并立即刷入，避免同步命令长时间无反馈。 */
+    appendLocalLog(taskId: string, level: TaskLogPayload["level"], message: string, filePath?: string) {
+      if (this.taskId !== taskId) return;
+      _logBuffer.push({ taskId, level, message, filePath });
+      this._flushLogs();
+    },
+
     /** 将缓冲区日志批量刷入响应式数组，超限时裁剪旧数据 */
     _flushLogs() {
       if (_logBuffer.length === 0) return;
@@ -34,10 +57,11 @@ export const useRuntimeStore = defineStore("runtime", {
       _logBuffer = [];
 
       // 一次性拼接 + 裁剪，仅触发一次响应式更新
+      const cap = currentLogCap();
       const merged = this.logs.concat(batch);
-      if (merged.length > LOG_MAX_LENGTH) {
-        // 保留最新的 LOG_MAX_LENGTH 条
-        this.logs = merged.slice(merged.length - LOG_MAX_LENGTH);
+      if (merged.length > cap) {
+        // 保留最新的 cap 条
+        this.logs = merged.slice(merged.length - cap);
       } else {
         this.logs = merged;
       }
@@ -64,6 +88,21 @@ export const useRuntimeStore = defineStore("runtime", {
       _logBuffer = [];
       this.progress = { taskId: "", stage: "", processed: 0, total: 0, percent: 0 };
       this._startFlushTimer();
+    },
+
+    finishLocalTask(taskId: string, status: TaskStatus = "Completed") {
+      if (this.taskId !== taskId) return;
+      this.status = status;
+      this._stopFlushTimer();
+    },
+
+    failLocalTask(taskId: string, message?: string) {
+      if (this.taskId !== taskId) return;
+      if (message) {
+        this.appendLocalLog(taskId, "ERROR", message);
+      }
+      this.status = "Failed";
+      this._stopFlushTimer();
     },
 
     async initEvents() {

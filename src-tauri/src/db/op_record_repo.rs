@@ -108,7 +108,13 @@ pub fn create_record(
     if tables.extra_summary_column.is_some() {
         conn.execute(
             &sql,
-            params![record_id, record_name, extra_value, source_paths_json, created_at],
+            params![
+                record_id,
+                record_name,
+                extra_value,
+                source_paths_json,
+                created_at
+            ],
         )
         .map_err(|e| AppError::Db(e.to_string()))?;
     } else {
@@ -196,7 +202,9 @@ pub fn list_records(
         where_clause = where_clause
     );
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Db(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| AppError::Db(e.to_string()))?;
 
     let mapper = |r: &rusqlite::Row| {
         Ok(OpRecordSummary {

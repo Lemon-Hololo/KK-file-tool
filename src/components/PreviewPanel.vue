@@ -156,6 +156,7 @@ const PreviewContent = defineComponent({
             h(ElTableColumn, { prop: "name", label: "内部路径" }),
             h(ElTableColumn, { prop: "size", label: "大小", width: 120 }),
             h(ElTableColumn, { prop: "isDir", label: "目录", width: 80 }),
+            h(ElTableColumn, { prop: "modifiedAt", label: "修改时间", width: 170 }),
           ]),
         ]);
       }
@@ -172,10 +173,19 @@ const PreviewContent = defineComponent({
 
 <template>
   <!-- ========== Popover 包裹模式 ========== -->
-  <el-popover v-if="isPopoverMode" :visible="popoverVisible" placement="right-start" :width="440" trigger="manual"
-    popper-class="preview-panel-popper" @mouseenter="onPopoverEnter" @mouseleave="onPopoverLeave">
+  <el-popover
+    v-if="isPopoverMode"
+    :visible="popoverVisible"
+    placement="right-start"
+    :width="440"
+    trigger="manual"
+    :persistent="false"
+    popper-class="preview-panel-popper"
+    @mouseenter="onPopoverEnter"
+    @mouseleave="onPopoverLeave"
+  >
     <template #default>
-      <div class="pop-wrap">
+      <div v-if="popoverVisible" class="pop-wrap">
         <div class="pop-title">
           <el-icon class="pop-title-icon">
             <Document />

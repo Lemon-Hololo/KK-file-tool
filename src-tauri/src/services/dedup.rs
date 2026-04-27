@@ -7,11 +7,15 @@ use walkdir::WalkDir;
 use crate::{
     app_state::{AppState, TaskRuntime},
     config::{HASH_QUEUE_SIZE, PARTIAL_BATCH_SIZE, PAUSE_SLEEP_MS},
-    constants::{hash_entry_status, keep_policy, log_level, stages},
+    constants::{hash_entry_status, keep_policy, stages},
     db::hash_repo,
     error::AppResult,
     models::{DedupConfig, DuplicateGroup, FileEntry, HashIndexEntry, TaskStatus},
-    services::{events, op_pipeline::resolve_thread_count},
+    services::{
+        events,
+        logging::TaskLogContext,
+        op_pipeline::{resolve_io_concurrency_multiplier, resolve_thread_count},
+    },
     utils::hash::hash_file_blake3,
     utils::path::to_extended_length_path,
 };
@@ -60,6 +64,7 @@ pub async fn run_dedup(
 ) -> AppResult<()> {
     runtime.set_status(TaskStatus::Running);
     events::emit_state_changed(&app, &task_id, "Running");
+    let log = TaskLogContext::new(&app, &task_id);
 
     // ---------------------------------------------------------
     // 阶段1：扫描 + 哈希 流水线
@@ -72,8 +77,10 @@ pub async fn run_dedup(
 
     let need_all_hash = config.save_record_enabled || config.use_last_record_enabled;
 
-    // 并发度统一从用户设置读取；许可数 = 有效线程数 × 2，保证 IO wait 期间有前台任务。
-    let concurrency = resolve_thread_count(&app_state.db_path) * 2;
+    // 并发度统一从用户设置读取；许可数 = 有效线程数 × IO 并发倍率，保证 IO wait 期间
+    // 有前台任务。倍率可在设置中心调（SSD/NVMe 可上调到 4~8，HDD 降到 1）。
+    let multiplier = resolve_io_concurrency_multiplier(&app_state.db_path);
+    let concurrency = resolve_thread_count(&app_state.db_path) * multiplier;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency.max(2)));
 
     let scan_runtime = runtime.clone();
@@ -87,6 +94,7 @@ pub async fn run_dedup(
     let app_progress = app.clone();
     let task_id_progress = task_id.clone();
     let paths_for_record = paths.clone();
+    let log_scan = log.clone();
 
     let scan_handle: tokio::task::JoinHandle<Result<(), String>> = tokio::spawn(async move {
         let mut all_scan: Vec<ScanItem> = vec![];
@@ -108,13 +116,7 @@ pub async fn run_dedup(
                 let meta = match std::fs::metadata(&ep) {
                     Ok(m) => m,
                     Err(e) => {
-                        events::emit_log(
-                            &app_scan,
-                            &task_id_scan,
-                            log_level::WARN,
-                            &format!("读取元数据失败: {e}"),
-                            Some(p.display().to_string()),
-                        );
+                        log_scan.warn_path(&format!("读取元数据失败: {e}"), &p);
                         continue;
                     }
                 };
@@ -178,12 +180,11 @@ pub async fn run_dedup(
 
             let tx = result_tx_scan.clone();
             let runtime_w = scan_runtime.clone();
-            let app_w = app_scan.clone();
-            let task_w = task_id_scan.clone();
             let hash_done_w = hash_done_c.clone();
             let app_prog = app_progress.clone();
             let task_prog = task_id_progress.clone();
             let total_snap = total;
+            let log_hash = log_scan.clone();
 
             tokio::spawn(async move {
                 let _permit = permit;
@@ -192,13 +193,7 @@ pub async fn run_dedup(
                     return;
                 }
 
-                events::emit_log(
-                    &app_w,
-                    &task_w,
-                    log_level::INFO,
-                    "哈希计算",
-                    Some(item.path.display().to_string()),
-                );
+                log_hash.info_path("哈希计算", &item.path);
 
                 let path_clone = item.path.clone();
                 let hash_result =
@@ -207,29 +202,29 @@ pub async fn run_dedup(
                 let hash = match hash_result {
                     Ok(Ok(h)) => h,
                     Ok(Err(e)) => {
-                        events::emit_log(
-                            &app_w,
-                            &task_w,
-                            log_level::WARN,
-                            &format!("哈希失败: {e}"),
-                            Some(item.path.display().to_string()),
-                        );
+                        log_hash.warn_path(&format!("哈希失败: {e}"), &item.path);
                         let done =
                             hash_done_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        events::emit_progress(&app_prog, &task_prog, stages::HASH, done, total_snap);
+                        events::emit_progress(
+                            &app_prog,
+                            &task_prog,
+                            stages::HASH,
+                            done,
+                            total_snap,
+                        );
                         return;
                     }
                     Err(e) => {
-                        events::emit_log(
-                            &app_w,
-                            &task_w,
-                            log_level::WARN,
-                            &format!("哈希任务崩溃: {e}"),
-                            Some(item.path.display().to_string()),
-                        );
+                        log_hash.warn_path(&format!("哈希任务崩溃: {e}"), &item.path);
                         let done =
                             hash_done_w.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-                        events::emit_progress(&app_prog, &task_prog, stages::HASH, done, total_snap);
+                        events::emit_progress(
+                            &app_prog,
+                            &task_prog,
+                            stages::HASH,
+                            done,
+                            total_snap,
+                        );
                         return;
                     }
                 };
@@ -285,20 +280,14 @@ pub async fn run_dedup(
     match scan_handle.await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
-            events::emit_log(
-                &app,
-                &task_id,
-                log_level::ERROR,
-                &format!("扫描任务失败: {e}"),
-                None,
-            );
+            log.error(&format!("扫描任务失败: {e}"));
             runtime.set_status(TaskStatus::Failed);
             events::emit_state_changed(&app, &task_id, "Failed");
             return Err(crate::error::AppError::Internal(e));
         }
         Err(e) => {
             let err_msg = format!("扫描任务崩溃: {}", e);
-            events::emit_log(&app, &task_id, log_level::ERROR, &err_msg, None);
+            log.error(&err_msg);
             runtime.set_status(TaskStatus::Failed);
             events::emit_state_changed(&app, &task_id, "Failed");
             return Err(crate::error::AppError::Internal(err_msg));
@@ -343,13 +332,7 @@ pub async fn run_dedup(
                     map
                 }
                 Err(e) => {
-                    events::emit_log(
-                        &app,
-                        &task_id,
-                        log_level::WARN,
-                        &format!("加载历史记录失败: {e}"),
-                        None,
-                    );
+                    log.warn(&format!("加载历史记录失败: {e}"));
                     HashMap::new()
                 }
             }
@@ -466,29 +449,11 @@ pub async fn run_dedup(
             chrono::Local::now().timestamp(),
         ) {
             Ok(record_id) => {
-                events::emit_log(
-                    &app,
-                    &task_id,
-                    log_level::INFO,
-                    &format!("保存记录成功: {} ({}条)", name, entries.len()),
-                    None,
-                );
-                events::emit_log(
-                    &app,
-                    &task_id,
-                    log_level::INFO,
-                    &format!("记录ID: {}", record_id),
-                    None,
-                );
+                log.info(&format!("保存记录成功: {} ({}条)", name, entries.len()));
+                log.info(&format!("记录ID: {}", record_id));
             }
             Err(e) => {
-                events::emit_log(
-                    &app,
-                    &task_id,
-                    log_level::ERROR,
-                    &format!("保存记录失败: {}", e),
-                    None,
-                );
+                log.error(&format!("保存记录失败: {}", e));
             }
         }
     }

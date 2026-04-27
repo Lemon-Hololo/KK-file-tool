@@ -8,7 +8,7 @@ use crate::{
     constants::mod_op_kind,
     error::{AppError, AppResult},
     models::{ModOpApplyResponse, ModOrganizePreviewItem},
-    services::{mod_tools::MOD_OP_TABLES, op_pipeline},
+    services::{logging::TaskLogContext, mod_tools::MOD_OP_TABLES, op_pipeline},
     utils::{
         filename::{extract_bracket, resolve_conflict},
         path::{to_extended_length_path, to_user_friendly_path},
@@ -16,7 +16,10 @@ use crate::{
 };
 
 /// 对 `paths` 下每个目录做一次（非递归）扫描；返回每个文件的归类预览。
-pub fn preview_mod_organize(paths: &[String]) -> AppResult<Vec<ModOrganizePreviewItem>> {
+pub fn preview_mod_organize(
+    paths: &[String],
+    log: Option<TaskLogContext>,
+) -> AppResult<Vec<ModOrganizePreviewItem>> {
     let mut result = vec![];
 
     for root in paths {
@@ -32,6 +35,9 @@ pub fn preview_mod_organize(paths: &[String]) -> AppResult<Vec<ModOrganizePrevie
             let Ok(ft) = entry.file_type() else { continue };
             if !ft.is_file() {
                 continue;
+            }
+            if let Some(log) = &log {
+                log.info_path("正在检查 Mod 归类", &file_path);
             }
             let file_name = entry.file_name().to_string_lossy().to_string();
             let Some(folder_name_raw) = extract_bracket(&file_name) else {
@@ -69,8 +75,9 @@ pub fn apply_mod_organize(
     paths: &[String],
     record_name: Option<String>,
     selected_old_paths: Option<Vec<String>>,
+    log: Option<TaskLogContext>,
 ) -> AppResult<ModOpApplyResponse> {
-    let mut preview = preview_mod_organize(paths)?;
+    let mut preview = preview_mod_organize(paths, log.clone())?;
 
     if let Some(selected) = selected_old_paths {
         let set: std::collections::HashSet<String> = selected.into_iter().collect();
@@ -81,6 +88,12 @@ pub fn apply_mod_organize(
         .into_iter()
         .map(|p| (p.old_path, p.new_path))
         .collect();
+
+    if let Some(log) = &log {
+        for (old_path, _) in &pairs {
+            log.info(&format!("准备归类: {old_path}"));
+        }
+    }
 
     let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
 

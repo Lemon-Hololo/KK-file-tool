@@ -12,6 +12,11 @@ export function normalizeInputPaths(paths: string[]) {
   return invokeCmd<NormalizePathResult>("normalize_input_paths", { paths });
 }
 
+/** 在资源管理器中打开目录；文件路径会高亮选中。 */
+export function revealInExplorer(filePath: string) {
+  return invokeCmd<void>("reveal_in_explorer", { filePath });
+}
+
 /** 启动一次去重任务；返回 `task_id`。 */
 export function startDedupTask(paths: string[], config: DedupConfig) {
   return invokeCmd<string>("start_dedup_task", { paths, config });

@@ -104,7 +104,13 @@ pub fn extract_bracket(name: &str) -> Option<&str> {
 /// 用 `-` 替换文件名中的非法字符。
 pub fn sanitize_filename(s: &str) -> String {
     s.chars()
-        .map(|c| if ILLEGAL_FILENAME_CHARS.contains(&c) { '-' } else { c })
+        .map(|c| {
+            if ILLEGAL_FILENAME_CHARS.contains(&c) {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 

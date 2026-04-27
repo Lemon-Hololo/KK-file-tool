@@ -5,18 +5,29 @@
  * 把"预览 → 选择 → 应用 → 撤回（全部 / 选中）"的交互流固定下来；
  * 具体业务（后缀修改 / Mod 重命名 / Mod 归类）通过 props 传入回调和表头。
  * 面板内部不持有业务状态，全部通过回调与父组件/store 同步。
+ *
+ * # 布局
+ * 用自有 `Panel` 作为壳（替代 el-card），body 默认 padded，从上到下：
+ * - 顶部控件区（el-form-item + 按钮组）——`flex-shrink: 0`
+ * - 可选 info 提示（自己写的简洁样式，不再依赖 el-alert）——`flex-shrink: 0`
+ * - `VirtualTable`（auto-height 模式）——`flex: 1; min-height: 0`
+ *
+ * 这里不再用 `el-card` 的原因：`el-card__body` 的默认 padding 与我们想要的
+ * 12px flex gap 不一致，用 `:deep()` 覆写又容易随 EP 升级失效。自有 Panel 把
+ * 布局契约定死，调用方无需再担心"卡片 body 能不能撑开"这种事。
  */
 
-import { computed, ref } from "vue";
+import { computed, ref, useSlots } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { useElementSize } from "@vueuse/core";
 
 import {
+  DEFAULT_EXTREME_ROW_THRESHOLD,
   EXTREME_OVERSCAN,
-  EXTREME_SUFFIX_ROW_THRESHOLD,
   NORMAL_OVERSCAN
 } from "../../constants/task";
+import { useConfigStore } from "../../stores/config";
 import type { VirtualColumn } from "../../types/virtualTable";
+import Panel from "./Panel.vue";
 import VirtualTable from "./VirtualTable.vue";
 
 interface RowBase {
@@ -25,57 +36,44 @@ interface RowBase {
 }
 
 const props = defineProps<{
-  /** 当前任务输入路径（仅透传给回调）。 */
   paths: string[];
-  /** 调用后端 `normalize_input_paths` 并 persist 结果；`null` 表示无可用路径。 */
   ensureNormalizedPaths: () => Promise<string[] | null>;
-  /** 表格列定义。 */
   columns: VirtualColumn[];
-  /** 行唯一键，默认 `oldPath`。 */
   rowKey?: string;
-  /** 预览回调：负责把结果写入 store。 */
   preview: (normalizedPaths: string[]) => Promise<void>;
-  /** 应用回调：`selectedOldPaths` 为空时视为"处理全部有效项"。 */
   apply: (
     normalizedPaths: string[],
     selectedOldPaths: string[]
   ) => Promise<{ success: number; failed: number }>;
-  /** 撤回前检查缺失文件（支持 `itemIds` 过滤）。 */
   checkRollback: (itemIds?: number[] | null) => Promise<{ missingPaths: string[] }>;
-  /** 执行撤回。 */
   rollback: (
     itemIds?: number[] | null
   ) => Promise<{ success: number; failed: number; skippedMissing: number }>;
-  /** 当前用于表格渲染的行（预览或应用结果，由父组件二选一）。 */
   rows: RowBase[];
-  /** 应用结果 items，用于"撤回选中"把 `oldPath` 映射回 `itemId`。 */
   applyItems: Array<{ oldPath: string; itemId: number }> | null | undefined;
-  /** 最后一次应用得到的 `recordId`；无则禁用撤回按钮。 */
   lastRecordId: string | null | undefined;
-  /** 应用前的确认文案。 */
   applyConfirmText?: string;
-  /** 应用按钮文案。 */
   applyButtonText?: string;
-  /** 预览后的 toast 构造函数（默认展示条目数）。 */
   previewToastBuilder?: (count: number) => string;
-  /** 额外的"选中筛选"：rename 面板用此过滤掉 `warn` 非空项。 */
   applySelectionFilter?: (row: RowBase) => boolean;
-  /** 顶部信息提示。 */
   infoTip?: string;
+  /** 列配置持久化 key，跨组件透传 */
+  columnConfigKey?: string;
+  /** 面板运行中时统一禁用动作按钮。 */
+  busy?: boolean;
 }>();
 
-const panelRef = ref<HTMLElement | null>(null);
-const { height: panelHeight } = useElementSize(panelRef);
+const configStore = useConfigStore();
+const slots = useSlots();
 
 const selectedOldPaths = ref<string[]>([]);
 
-const tableHeight = computed(() => {
-  const h = panelHeight.value;
-  if (!h) return 420;
-  return Math.max(260, h - 180);
+const isExtreme = computed(() => {
+  const th = configStore.settings.extremeRowThreshold || DEFAULT_EXTREME_ROW_THRESHOLD;
+  return props.rows.length > th;
 });
 
-const isExtreme = computed(() => props.rows.length > EXTREME_SUFFIX_ROW_THRESHOLD);
+const tableSlotNames = computed(() => Object.keys(slots).filter((name) => name !== "topForm"));
 
 function onSelectionChange(rows: RowBase[]) {
   selectedOldPaths.value = rows.map((x) => x.oldPath).filter(Boolean);
@@ -162,49 +160,50 @@ async function handleRollbackSelected() {
 </script>
 
 <template>
-  <div ref="panelRef" class="ops-panel">
-    <el-card shadow="hover" class="main-card">
-      <el-form inline class="top-form">
+  <Panel class="ops-panel" :padded="true">
+    <div class="ops-toolbar">
+      <div class="ops-inputs">
         <slot name="topForm" />
-        <el-form-item>
-          <el-space wrap>
-            <el-button @click="handlePreview">预览</el-button>
-            <el-button type="primary" @click="handleApply">
-              {{ applyButtonText ?? "确认修改" }}
-            </el-button>
-            <el-button type="warning" @click="handleRollbackLast">撤回本次</el-button>
-            <el-button @click="handleRollbackSelected">撤回选中</el-button>
-          </el-space>
-        </el-form-item>
-      </el-form>
+      </div>
+      <div class="ops-actions">
+        <el-button :disabled="busy" @click="handlePreview">预览</el-button>
+        <el-button type="primary" :disabled="busy" @click="handleApply">
+          {{ applyButtonText ?? "确认修改" }}
+        </el-button>
+        <el-button type="warning" plain :disabled="busy" @click="handleRollbackLast">撤回本次</el-button>
+        <el-button plain :disabled="busy" @click="handleRollbackSelected">撤回选中</el-button>
+      </div>
+    </div>
 
-      <el-alert
-        type="info"
-        :closable="false"
-        style="margin-bottom:8px"
-        :title="infoTip ?? `当前勾选：${selectedOldPaths.length}（未勾选时默认处理全部有效预览项）`"
-      />
+    <div class="ops-tip">
+      <span class="dot" />
+      <span>{{
+        infoTip ?? `当前勾选：${selectedOldPaths.length}（未勾选时默认处理全部有效预览项）`
+      }}</span>
+    </div>
 
-      <el-alert
-        v-if="isExtreme"
-        type="warning"
-        :closable="false"
-        style="margin-bottom:8px"
-        title="数据量较大，已启用极限性能模式"
-      />
+    <div v-if="isExtreme" class="ops-warn">
+      <span class="dot dot-warn" />
+      <span>数据量较大，已启用极限性能模式</span>
+    </div>
 
-      <VirtualTable
-        :rows="rows"
-        :columns="columns"
-        :height="tableHeight"
-        :item-height="36"
-        :overscan="isExtreme ? EXTREME_OVERSCAN : NORMAL_OVERSCAN"
-        :row-key="rowKey ?? 'oldPath'"
-        selectable
-        @selectionChange="onSelectionChange"
-      />
-    </el-card>
-  </div>
+    <VirtualTable
+      class="ops-table"
+      :rows="rows"
+      :columns="columns"
+      :item-height="36"
+      :overscan="isExtreme ? EXTREME_OVERSCAN : NORMAL_OVERSCAN"
+      :row-key="rowKey ?? 'oldPath'"
+      :column-config-key="columnConfigKey"
+      fit-width
+      selectable
+      @selectionChange="onSelectionChange"
+    >
+      <template v-for="name in tableSlotNames" :key="name" #[name]="scope">
+        <slot :name="name" v-bind="scope" />
+      </template>
+    </VirtualTable>
+  </Panel>
 </template>
 
 <style scoped>
@@ -212,10 +211,64 @@ async function handleRollbackSelected() {
   height: 100%;
   min-height: 0;
 }
-.main-card {
-  height: 100%;
-  min-height: 0;
+
+.ops-toolbar {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  gap: var(--ff-space-2) var(--ff-space-3);
+  align-items: center;
+  flex-shrink: 0;
+}
+.ops-inputs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ff-space-2) var(--ff-space-3);
+  min-width: 0;
+}
+.ops-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--ff-space-2);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.ops-tip,
+.ops-warn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--ff-font-sm);
+  padding: 6px 10px;
+  border-radius: var(--ff-radius-sm);
+  background: var(--ff-accent-soft);
+  color: var(--ff-text-secondary);
+  flex-shrink: 0;
+}
+.ops-warn {
+  background: var(--ff-warning-soft);
+  color: var(--ff-warning);
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ff-accent);
+  flex-shrink: 0;
+}
+.dot-warn {
+  background: var(--ff-warning);
+}
+
+.ops-table {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 让 el-form-item 在 toolbar 里跟我们的 gap 对齐，不再用 EP 自己的 margin */
+.ops-toolbar :deep(.el-form-item) {
+  margin: 0;
 }
 </style>

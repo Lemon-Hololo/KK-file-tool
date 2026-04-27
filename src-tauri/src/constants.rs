@@ -11,12 +11,16 @@ pub mod events {
     pub const TASK_COMPLETED: &str = "task_completed";
     pub const MOVE_REPORT_READY: &str = "move_report_ready";
     pub const MOD_SCAN_COMPLETED: &str = "mod_scan_completed";
+    pub const MOD_DUPLICATE_PARTIAL: &str = "mod_duplicate_partial";
+    pub const MOD_VERSION_PARTIAL: &str = "mod_version_partial";
 }
 
 pub mod stages {
     pub const SCAN: &str = "scan";
     pub const HASH: &str = "hash";
     pub const MOD_SCAN: &str = "mod_scan";
+    pub const MOD_DUPLICATE: &str = "mod_duplicate";
+    pub const MOD_VERSION: &str = "mod_version";
 }
 
 pub mod log_level {
@@ -53,8 +57,22 @@ pub mod hash_entry_status {
 pub mod mod_op_kind {
     pub const RENAME: &str = "rename";
     pub const ORGANIZE: &str = "organize";
+    pub const MODIFY: &str = "modify";
+    pub const DUPLICATE_DELETE: &str = "duplicate_delete";
+    pub const VERSION_DELETE: &str = "version_delete";
 
     pub fn is_valid(v: &str) -> bool {
-        matches!(v, RENAME | ORGANIZE)
+        matches!(
+            v,
+            RENAME | ORGANIZE | MODIFY | DUPLICATE_DELETE | VERSION_DELETE
+        )
+    }
+}
+
+pub mod empty_dir_op_kind {
+    pub const DELETE: &str = "delete";
+
+    pub fn is_valid(v: &str) -> bool {
+        matches!(v, DELETE)
     }
 }

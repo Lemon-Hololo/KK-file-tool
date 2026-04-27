@@ -1,9 +1,12 @@
-//! 路径规范化命令。
+//! 路径规范化与资源管理器定位命令。
 
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, path::PathBuf, process::Command};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use crate::{
-    error::AppResult,
+    error::{AppError, AppResult},
     models::NormalizePathResult,
     utils::path::{cmp_key_case_insensitive, is_parent_of},
 };
@@ -19,6 +22,12 @@ fn canonicalize_path(raw: &str) -> Option<PathBuf> {
 #[tauri::command]
 pub fn normalize_input_paths(paths: Vec<String>) -> Result<NormalizePathResult, String> {
     normalize_input_paths_impl(paths).map_err(|e| e.to_string())
+}
+
+/// 在 Windows 资源管理器中打开目录；文件路径会高亮选中，目录路径则直接打开。
+#[tauri::command]
+pub fn reveal_in_explorer(file_path: String) -> Result<(), String> {
+    reveal_in_explorer_impl(&file_path).map_err(|e| e.to_string())
 }
 
 fn normalize_input_paths_impl(paths: Vec<String>) -> AppResult<NormalizePathResult> {
@@ -65,4 +74,29 @@ fn normalize_input_paths_impl(paths: Vec<String>) -> AppResult<NormalizePathResu
         removed_paths: removed,
         warnings,
     })
+}
+
+fn reveal_in_explorer_impl(file_path: &str) -> AppResult<()> {
+    let path = std::fs::canonicalize(file_path).map_err(|e| AppError::Io(e.to_string()))?;
+    let meta = std::fs::metadata(&path).map_err(|e| AppError::Io(e.to_string()))?;
+
+    let mut cmd = Command::new("explorer.exe");
+    if meta.is_dir() {
+        cmd.arg(path.as_os_str());
+    } else {
+        #[cfg(windows)]
+        {
+            // explorer 对 `/select,<path>` 的解析很脆；路径里带空格/逗号时容易退回“文档”。
+            // 用 raw_arg 直接传入完整命令行片段，保证它拿到精确的 `"绝对路径"`。
+            cmd.raw_arg(format!(r#"/select,"{}""#, path.display()));
+        }
+
+        #[cfg(not(windows))]
+        {
+            cmd.arg(format!("/select,{}", path.display()));
+        }
+    }
+
+    cmd.spawn().map_err(|e| AppError::Io(e.to_string()))?;
+    Ok(())
 }

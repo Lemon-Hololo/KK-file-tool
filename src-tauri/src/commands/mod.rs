@@ -4,6 +4,7 @@
 //! → `db::*` 数据访问。命令层只做参数转发 / 错误映射，不写业务。
 
 pub mod dedup;
+pub mod empty_dirs;
 pub mod mod_tools;
 pub mod move_file;
 pub mod path;

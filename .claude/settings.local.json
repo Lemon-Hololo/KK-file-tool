@@ -6,7 +6,9 @@
       "Bash(cargo check:*)",
       "Bash(npx vue-tsc:*)",
       "Bash(echo \"EXIT=$?\")",
-      "Bash(xargs wc *)"
+      "Bash(xargs wc *)",
+      "Bash(grep -v \"^$\")",
+      "Bash(echo \"EXIT: $?\")"
     ]
   }
 }

@@ -1,6 +1,7 @@
 //! 统一的"记录型操作"流水线（preview → apply → rollback）。
 //!
-//! `services::suffix` 与 `services::mod_tools::{rename, organize}` 共享相同的
+//! `services::suffix`、`services::empty_dirs` 与 `services::mod_tools::{rename, organize}`
+//! 共享相同的
 //! 语义：
 //!
 //! 1. `preview`：业务规则计算出一批 `(old_path, new_path)`；
@@ -8,6 +9,7 @@
 //!    `std::fs::rename`（可选地预创建目标父目录），把结果写回 item 表；
 //! 3. `rollback`：读取记录 item，对 `apply_success = true` 的项把 `new_path`
 //!    重命名回 `old_path`，更新回滚字段，并维护记录整体的 `rollback_status`。
+//!    空文件夹清理由业务侧自定义撤回为重新创建目录。
 //!
 //! 本模块是这三个动作的唯一实现，业务侧只负责产生 `pairs` 与传入
 //! `OpRecordTables` / 附加列值。
@@ -24,6 +26,10 @@ use rayon::prelude::*;
 use rayon::ThreadPool;
 
 use crate::{
+    config::{
+        DEFAULT_IO_CONCURRENCY_MULTIPLIER, DEFAULT_TEXT_PREVIEW_MAX_KB,
+        DEFAULT_ZIP_PREVIEW_MAX_ENTRIES,
+    },
     db::{op_record_repo, settings_repo},
     error::{AppError, AppResult},
     models::{ModOpApplyItem, ModOpApplyResponse, ModOpRollbackCheck, ModOpRollbackResponse},
@@ -41,6 +47,46 @@ pub fn resolve_thread_count(db_path: &Path) -> usize {
         (configured as usize).min(num_cpus::get()).max(1)
     } else {
         num_cpus::get().max(1)
+    }
+}
+
+/// 读取 IO 并发倍率（`有效线程数 × 本倍率` 作为 dedup/Mod 扫描的 Semaphore 许可）。
+///
+/// 用户配置无效（≤ 0 或读取失败）时退回 `DEFAULT_IO_CONCURRENCY_MULTIPLIER`；
+/// 上限硬压在 16，防止意外配置把许可数撑爆。
+pub fn resolve_io_concurrency_multiplier(db_path: &Path) -> usize {
+    let configured = settings_repo::get_settings(db_path)
+        .map(|s| s.io_concurrency_multiplier)
+        .unwrap_or(DEFAULT_IO_CONCURRENCY_MULTIPLIER);
+    if configured >= 1 {
+        (configured as usize).min(16)
+    } else {
+        DEFAULT_IO_CONCURRENCY_MULTIPLIER as usize
+    }
+}
+
+/// 读取文本预览最大字节数（设置里存的是 KB）。
+pub fn resolve_text_preview_max_bytes(db_path: &Path) -> usize {
+    let kb = settings_repo::get_settings(db_path)
+        .map(|s| s.text_preview_max_kb)
+        .unwrap_or(DEFAULT_TEXT_PREVIEW_MAX_KB);
+    let kb = if kb >= 1 {
+        kb
+    } else {
+        DEFAULT_TEXT_PREVIEW_MAX_KB
+    };
+    (kb as usize).saturating_mul(1024)
+}
+
+/// 读取压缩包预览最大条目数。
+pub fn resolve_zip_preview_max_entries(db_path: &Path) -> usize {
+    let v = settings_repo::get_settings(db_path)
+        .map(|s| s.zip_preview_max_entries)
+        .unwrap_or(DEFAULT_ZIP_PREVIEW_MAX_ENTRIES);
+    if v >= 1 {
+        v as usize
+    } else {
+        DEFAULT_ZIP_PREVIEW_MAX_ENTRIES as usize
     }
 }
 
@@ -74,8 +120,7 @@ pub fn parallel_move(
                 if create_parent {
                     if let Some(parent) = new_p.parent() {
                         if !to_extended_length_path(parent).exists() {
-                            if let Err(e) =
-                                std::fs::create_dir_all(to_extended_length_path(parent))
+                            if let Err(e) = std::fs::create_dir_all(to_extended_length_path(parent))
                             {
                                 return (old_path, new_path, false, Some(e.to_string()));
                             }
@@ -91,6 +136,33 @@ pub fn parallel_move(
                     Err(e) => (old_path, new_path, false, Some(e.to_string())),
                 }
             })
+            .collect()
+    }))
+}
+
+/// 并行执行自定义的 per-pair 动作（替代 `parallel_move` 的 `std::fs::rename`）。
+///
+/// 用于"修改"类不完全是纯 rename 的操作：执行器决定如何从 `old_path` 得到
+/// `new_path`，只要最终两个路径都真实存在，后续 `op_pipeline::rollback`
+/// 就能通过 `rename(new_path → old_path)` 恢复。
+pub fn parallel_execute<F>(
+    pairs: Vec<(String, String)>,
+    thread_count: usize,
+    executor: F,
+) -> AppResult<Vec<MoveOutcome>>
+where
+    F: Fn(&str, &str) -> Result<(), String> + Send + Sync,
+{
+    let pool = rayon_pool(thread_count)?;
+    Ok(pool.install(|| {
+        pairs
+            .into_par_iter()
+            .map(
+                |(old_path, new_path)| match executor(&old_path, &new_path) {
+                    Ok(_) => (old_path, new_path, true, None),
+                    Err(e) => (old_path, new_path, false, Some(e)),
+                },
+            )
             .collect()
     }))
 }
@@ -115,7 +187,58 @@ pub fn persist_apply_rename_pairs(
     create_parent: bool,
 ) -> AppResult<ModOpApplyResponse> {
     let thread_count = resolve_thread_count(db_path);
+    let results = parallel_move(pairs, create_parent, thread_count)?;
+    persist_apply_results(
+        db_path,
+        tables,
+        extra_value,
+        record_name,
+        source_paths,
+        results,
+    )
+}
 
+/// 通用入口：用自定义执行器跑一批 `(old, new)`，然后把结果持久化为记录。
+pub fn persist_apply_with_executor<F>(
+    db_path: &Path,
+    tables: OpRecordTables,
+    extra_value: &str,
+    record_name: String,
+    source_paths: &[String],
+    pairs: Vec<(String, String)>,
+    executor: F,
+) -> AppResult<ModOpApplyResponse>
+where
+    F: Fn(&str, &str) -> Result<(), String> + Send + Sync,
+{
+    let thread_count = resolve_thread_count(db_path);
+    let results = parallel_execute(pairs, thread_count, executor)?;
+    persist_apply_results(
+        db_path,
+        tables,
+        extra_value,
+        record_name,
+        source_paths,
+        results,
+    )
+}
+
+/// 把预先计算好的结果写入记录表，并映射为 `ModOpApplyResponse`。
+///
+/// 供 `persist_apply_rename_pairs` 与 `persist_apply_with_executor` 共享。
+/// 把已执行完成的一批结果写入记录表，并映射为 `ModOpApplyResponse`。
+///
+/// 大多数业务应优先用 `persist_apply_rename_pairs` 或
+/// `persist_apply_with_executor`；只有执行顺序必须由业务控制时（如空目录清理要先删
+/// 深层目录再删父目录）才直接调用本函数。
+pub fn persist_apply_results(
+    db_path: &Path,
+    tables: OpRecordTables,
+    extra_value: &str,
+    record_name: String,
+    source_paths: &[String],
+    results: Vec<MoveOutcome>,
+) -> AppResult<ModOpApplyResponse> {
     let created_at = Local::now().timestamp();
     let source_paths_json =
         serde_json::to_string(source_paths).map_err(|e| AppError::Internal(e.to_string()))?;
@@ -127,8 +250,6 @@ pub fn persist_apply_rename_pairs(
         &source_paths_json,
         created_at,
     )?;
-
-    let results = parallel_move(pairs, create_parent, thread_count)?;
 
     let now = Local::now().timestamp();
     let item_ids = op_record_repo::batch_insert_items(
@@ -156,7 +277,11 @@ pub fn persist_apply_rename_pairs(
             item_id: item_ids[i],
             old_path,
             new_path,
-            status: if ok { "success".into() } else { "failed".into() },
+            status: if ok {
+                "success".into()
+            } else {
+                "failed".into()
+            },
             message: msg,
         });
     }

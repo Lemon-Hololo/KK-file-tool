@@ -32,6 +32,59 @@ pub struct ModOrganizePreviewItem {
     pub will_conflict: bool,
 }
 
+/// 参与重复 / 不同版本检查的单个 Mod 文件。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModIdentityFile {
+    pub file_path: String,
+    pub guid: String,
+    pub version: String,
+    pub author: String,
+    pub size: u64,
+    pub mtime: i64,
+    pub ctime: i64,
+}
+
+/// 重复 MOD 分组：`guid + author + version` 完全相同。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModDuplicateGroup {
+    pub group_id: String,
+    pub guid: String,
+    pub author: String,
+    pub version: String,
+    pub files: Vec<ModIdentityFile>,
+}
+
+/// 重复 MOD 检查的增量结果事件载荷。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModDuplicatePartialPayload {
+    pub task_id: String,
+    pub groups: Vec<ModDuplicateGroup>,
+    pub done: bool,
+}
+
+/// 不同版本 MOD 分组：`guid + author` 相同但存在多个版本。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModVersionGroup {
+    pub group_id: String,
+    pub guid: String,
+    pub author: String,
+    pub latest_version: String,
+    pub files: Vec<ModIdentityFile>,
+}
+
+/// 不同版本 MOD 检查的增量结果事件载荷。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModVersionPartialPayload {
+    pub task_id: String,
+    pub groups: Vec<ModVersionGroup>,
+    pub done: bool,
+}
+
 /// 应用结果 item。`status` 取值 `"success"` / `"failed"`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

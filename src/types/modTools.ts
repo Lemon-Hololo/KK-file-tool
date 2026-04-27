@@ -31,15 +31,66 @@ export interface ModOrganizePreviewItem {
   willConflict: boolean;
 }
 
+/** 重复 / 不同版本检查中的单个 Mod 文件。 */
+export interface ModIdentityFile {
+  filePath: string;
+  guid: string;
+  version: string;
+  author: string;
+  size: number;
+  mtime: number;
+  ctime: number;
+  selectedForDelete?: boolean;
+}
+
+/** `guid + author + version` 完全相同的重复 MOD 分组。 */
+export interface ModDuplicateGroup {
+  groupId: string;
+  guid: string;
+  author: string;
+  version: string;
+  files: ModIdentityFile[];
+}
+
+/** 重复 MOD 检查的增量结果事件。 */
+export interface ModDuplicatePartialPayload {
+  taskId: string;
+  groups: ModDuplicateGroup[];
+  done: boolean;
+}
+
+/** `guid + author` 相同但版本不同的 MOD 分组。 */
+export interface ModVersionGroup {
+  groupId: string;
+  guid: string;
+  author: string;
+  latestVersion: string;
+  files: ModIdentityFile[];
+}
+
+/** 不同版本 MOD 检查的增量结果事件。 */
+export interface ModVersionPartialPayload {
+  taskId: string;
+  groups: ModVersionGroup[];
+  done: boolean;
+}
+
 export type ModOpApplyItem = OpApplyItem;
-export type ModOpApplyResponse = OpApplyResponse & { kind: "rename" | "organize" | string };
+export type ModOpKind =
+  | "rename"
+  | "organize"
+  | "modify"
+  | "duplicate_delete"
+  | "version_delete"
+  | string;
+export type ModOpApplyResponse = OpApplyResponse & { kind: ModOpKind };
 export type ModOpRecordItem = OpRecordItem;
 export type ModOpRollbackCheck = OpRollbackCheck;
 export type ModOpRollbackResponse = OpRollbackResponse;
 
 /** 摘要额外字段：操作类型。 */
-export type ModOpRecordSummary = OpRecordSummary<{ kind: "rename" | "organize" | string }>;
-export type ModOpRecordDetail = OpRecordDetail<{ kind: "rename" | "organize" | string }>;
+export type ModOpRecordSummary = OpRecordSummary<{ kind: ModOpKind }>;
+export type ModOpRecordDetail = OpRecordDetail<{ kind: ModOpKind }>;
 
 /** 扫描阶段单条匹配。 */
 export interface ModScanMatch {

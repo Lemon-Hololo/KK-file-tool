@@ -3,6 +3,7 @@
 //! 三个功能共享 `op_pipeline` 流水线：
 //! - [`rename`]：读取 zipmod 内 `manifest.xml` 的 `guid/author/version`，生成 `[author] guid-version.zipmod`。
 //! - [`organize`]：按文件名首个 `[...]` 建子目录并归类（非递归）。
+//! - [`cleanup`]：按 `guid/author/version` 检查重复与不同版本，并把删除移动到可回滚备份。
 //! - [`scan`]：长任务，扫描 zipmod 查找含指定 `<game>` 关键字的条目。
 //!
 //! 记录管理（list / detail / rollback / delete / rename）统一通过
@@ -13,12 +14,14 @@ use crate::{
     db::op_record_repo::OpRecordTables,
     error::{AppError, AppResult},
     models::{
-        ModOpApplyItem, ModOpRecordDetail, ModOpRecordItem, ModOpRecordSummary,
-        ModOpRollbackCheck, ModOpRollbackResponse,
+        ModOpApplyItem, ModOpRecordDetail, ModOpRecordItem, ModOpRecordSummary, ModOpRollbackCheck,
+        ModOpRollbackResponse,
     },
     services::op_pipeline,
 };
 
+pub mod cleanup;
+pub mod modify;
 pub mod organize;
 pub mod rename;
 pub mod scan;
@@ -88,11 +91,7 @@ pub fn delete_record(db_path: &std::path::Path, record_id: &str) -> AppResult<()
 }
 
 /// 重命名记录。
-pub fn rename_record(
-    db_path: &std::path::Path,
-    record_id: &str,
-    new_name: &str,
-) -> AppResult<()> {
+pub fn rename_record(db_path: &std::path::Path, record_id: &str, new_name: &str) -> AppResult<()> {
     crate::db::op_record_repo::rename_record(db_path, MOD_OP_TABLES, record_id, new_name)
 }
 
