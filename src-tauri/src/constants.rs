@@ -45,7 +45,7 @@ pub mod theme {
 }
 
 pub mod db_file {
-    pub const DEFAULT_NAME: &str = "fileflow.db";
+    pub const DEFAULT_NAME: &str = "kk-file-tool.db";
     pub const WAL_EXT: &str = "db-wal";
     pub const SHM_EXT: &str = "db-shm";
 }

@@ -1,9 +1,9 @@
 //! 通用"操作记录"表访问层。
 //!
-//! FileFlow 中目前有两种记录型操作：后缀修改 (`suffix_change_records`) 与
-//! Mod 工具 (`mod_op_records`)。两者共享相同的流水线（preview → apply → rollback）
-//! 与 item 表 schema，只在 `records` 主表的"附加字段"上不同（前者是 `target_suffix`，
-//! 后者是 `kind`）。
+//! 项目中目前有几种记录型操作：后缀修改 (`suffix_change_records`)、
+//! Mod 工具 (`mod_op_records`) 与空文件夹清理 (`empty_dir_op_records`)。
+//! 它们共享相同的流水线（preview → apply → rollback）与 item 表 schema，
+//! 只在主表的"附加字段"上不同（如 `target_suffix` / `kind`）。
 //!
 //! 本模块用参数化表描述符 [`OpRecordTables`] 统一两者的 CRUD，
 //! 避免在 `suffix_repo.rs` / `mod_tools_repo.rs` 维护两份几乎相同的 SQL。

@@ -2,7 +2,7 @@
 //!
 //! 用于在"能打开数据库之前"就需要读取的配置项——典型就是数据库路径本身
 //! （鸡生蛋问题：无法把数据库路径存到数据库里）。文件位于
-//! `<app_data_dir>/fileflow_config.json`。
+//! `<app_data_dir>/kk-file-tool_config.json`。
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -14,9 +14,9 @@ pub struct ExternalConfig {
     pub db_path: Option<String>,
 }
 
-const CONFIG_FILE_NAME: &str = "fileflow_config.json";
+const CONFIG_FILE_NAME: &str = "kk-file-tool_config.json";
 
-/// 返回配置文件的绝对路径（`<app_data_dir>/fileflow_config.json`）。
+/// 返回配置文件的绝对路径（`<app_data_dir>/kk-file-tool_config.json`）。
 pub fn config_file_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(CONFIG_FILE_NAME)
 }
@@ -43,11 +43,11 @@ pub fn resolve_db_path(app_data_dir: &Path, config: &ExternalConfig) -> PathBuf 
         Some(p) if !p.trim().is_empty() => {
             let path = PathBuf::from(p);
             if path.is_dir() {
-                path.join("fileflow.db")
+                path.join("kk-file-tool.db")
             } else {
                 path
             }
         }
-        _ => app_data_dir.join("fileflow.db"),
+        _ => app_data_dir.join("kk-file-tool.db"),
     }
 }

@@ -523,7 +523,7 @@ fn apply_mod_delete(
 fn backup_path_for_delete(original: &str, ts: i64) -> String {
     let short = uuid::Uuid::new_v4().simple().to_string();
     let short = &short[..8];
-    format!("{original}.fileflow-del-{ts}-{short}")
+    format!("{original}.kk-file-tool-del-{ts}-{short}")
 }
 
 fn system_time_to_timestamp(value: Option<SystemTime>) -> i64 {

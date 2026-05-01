@@ -128,14 +128,14 @@ fn temp_sibling_path(original: &Path) -> PathBuf {
     let short = Uuid::new_v4().simple().to_string();
     let short = &short[..8];
     let parent = original.parent().unwrap_or_else(|| Path::new("."));
-    parent.join(format!("{stem}.fileflow-tmp-{short}"))
+    parent.join(format!("{stem}.kk-file-tool-tmp-{short}"))
 }
 
-/// 生成备份路径：`{原文件}.fileflow-bak-{timestamp}-{uuid8}`。
+/// 生成备份路径：`{原文件}.kk-file-tool-bak-{timestamp}-{uuid8}`。
 fn backup_path_for(original: &str, ts: i64) -> String {
     let short = Uuid::new_v4().simple().to_string();
     let short = &short[..8];
-    format!("{original}.fileflow-bak-{ts}-{short}")
+    format!("{original}.kk-file-tool-bak-{ts}-{short}")
 }
 
 /// 应用"移除版本限制"并持久化为 Mod 操作记录。

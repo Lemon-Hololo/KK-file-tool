@@ -986,30 +986,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fileflow-desktop"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "chrono",
- "encoding_rs",
- "image",
- "num_cpus",
- "quick-xml 0.36.2",
- "rayon",
- "rusqlite",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
- "walkdir",
- "zip",
-]
-
-[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2031,6 +2007,30 @@ dependencies = [
  "bitflags 2.11.0",
  "serde",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "kk-file-tool"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chrono",
+ "encoding_rs",
+ "image",
+ "num_cpus",
+ "quick-xml 0.36.2",
+ "rayon",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "walkdir",
+ "zip",
 ]
 
 [[package]]

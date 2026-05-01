@@ -1,4 +1,4 @@
-export const APP_NAME = "FileFlow Desktop";
+export const APP_NAME = "KK File Tool";
 
 /**
  * 日志保留上限（条）的**编译期兜底值**。

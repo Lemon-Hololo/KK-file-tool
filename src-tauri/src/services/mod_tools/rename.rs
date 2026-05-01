@@ -311,7 +311,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        std::env::temp_dir().join(format!("fileflow-{prefix}-{nonce}"))
+        std::env::temp_dir().join(format!("kk-file-tool-{prefix}-{nonce}"))
     }
 
     #[test]

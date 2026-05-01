@@ -48,7 +48,7 @@ pub fn get_db_info(state: State<'_, Arc<AppState>>) -> Result<DbPathInfo, String
     })
 }
 
-/// 设置/清空自定义数据库路径（写入 `fileflow_config.json`）。
+/// 设置/清空自定义数据库路径（写入 `kk-file-tool_config.json`）。
 ///
 /// 变更仅在下次启动时生效，避免运行中切换连接导致数据丢失。
 #[tauri::command]

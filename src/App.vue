@@ -72,13 +72,13 @@ function toggleCollapse() {
       <button
         type="button"
         class="brand"
-        :title="collapsed ? '展开' : 'FileFlow Desktop'"
+        :title="collapsed ? '展开' : 'KK File Tool'"
         @click="toggleCollapse"
       >
         <span class="brand-icon">
           <el-icon :size="20"><Document /></el-icon>
         </span>
-        <span v-show="!collapsed" class="brand-text">FileFlow</span>
+        <span v-show="!collapsed" class="brand-text">KK File Tool</span>
       </button>
 
       <nav class="nav">

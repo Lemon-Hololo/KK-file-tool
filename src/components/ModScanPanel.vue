@@ -103,7 +103,7 @@ function onSelectionChange(rows: unknown[]) {
 /**
  * 对勾选的 `.zipmod` 应用"移除 `<game>KEYWORD</game>`"。
  *
- * 修改是就地重写 zip（备份保留在 `{原文件}.fileflow-bak-...`），
+ * 修改是就地重写 zip（备份保留在 `{原文件}.kk-file-tool-bak-...`），
  * 提交即写入可撤回的 Mod 操作记录。
  */
 async function applyModifyVersion() {

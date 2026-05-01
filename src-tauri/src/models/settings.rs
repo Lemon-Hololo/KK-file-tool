@@ -76,7 +76,7 @@ impl Default for AppSettings {
 pub struct DbPathInfo {
     /// 当前实际使用的数据库路径。
     pub current_path: String,
-    /// 默认路径（`<app_data_dir>/fileflow.db`）。
+    /// 默认路径（`<app_data_dir>/kk-file-tool.db`）。
     pub default_path: String,
     /// 用户自定义路径；未设置时为 `None`。
     pub custom_path: Option<String>,

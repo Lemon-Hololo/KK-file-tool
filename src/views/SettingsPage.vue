@@ -94,7 +94,7 @@ async function changeTheme(v: any) {
 /**
  * 弹出系统目录选择框，把选中的目录写到自定义数据库路径输入。
  *
- * 后端 `external_config::resolve_db_path` 已经做了"是目录就追加 fileflow.db"的兜底，
+ * 后端 `external_config::resolve_db_path` 已经做了"是目录就追加 kk-file-tool.db"的兜底，
  * 所以前端只把目录路径塞进去就行，不需要手动拼文件名。
  */
 async function pickDbFolder() {

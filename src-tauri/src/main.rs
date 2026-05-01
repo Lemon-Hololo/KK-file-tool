@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    fileflow_desktop_lib::run();
+    kk_file_tool_lib::run();
 }
