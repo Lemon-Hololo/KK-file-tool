@@ -306,15 +306,19 @@ pub fn check_rollback(
     item_ids: Option<Vec<i64>>,
 ) -> AppResult<ModOpRollbackCheck> {
     let detail = op_record_repo::get_record_detail(db_path, tables, record_id)?;
-    let selected: Vec<_> = detail
+    check_rollback_with_detail(db_path, &detail, item_ids.as_ref())
+}
+
+/// 与 [`check_rollback`] 等价，但接受调用方已经查到的 detail，避免重复读库。
+pub fn check_rollback_with_detail(
+    db_path: &Path,
+    detail: &op_record_repo::OpRecordDetail,
+    item_ids: Option<&Vec<i64>>,
+) -> AppResult<ModOpRollbackCheck> {
+    let selected: Vec<&op_record_repo::OpRecordItem> = detail
         .items
-        .into_iter()
-        .filter(|x| {
-            item_ids
-                .as_ref()
-                .map(|ids| ids.contains(&x.item_id))
-                .unwrap_or(true)
-        })
+        .iter()
+        .filter(|x| item_ids.map(|ids| ids.contains(&x.item_id)).unwrap_or(true))
         .filter(|x| x.apply_success)
         .collect();
 
@@ -358,10 +362,12 @@ pub fn rollback(
     item_ids: Option<Vec<i64>>,
     force_ignore_missing: bool,
 ) -> AppResult<ModOpRollbackResponse> {
+    // 一次查 detail，给 check_rollback 与 selected 逻辑共用，避免重复读库。
     let detail = op_record_repo::get_record_detail(db_path, tables, record_id)?;
-    let selected: Vec<_> = detail
+
+    let selected: Vec<op_record_repo::OpRecordItem> = detail
         .items
-        .into_iter()
+        .iter()
         .filter(|x| {
             item_ids
                 .as_ref()
@@ -369,9 +375,10 @@ pub fn rollback(
                 .unwrap_or(true)
         })
         .filter(|x| x.apply_success)
+        .cloned()
         .collect();
 
-    let check = check_rollback(db_path, tables, record_id, item_ids.clone())?;
+    let check = check_rollback_with_detail(db_path, &detail, item_ids.as_ref())?;
     if !force_ignore_missing && !check.missing_paths.is_empty() {
         return Err(AppError::InvalidInput(format!(
             "存在 {} 个文件缺失，请确认后使用 forceIgnoreMissing=true 再执行",

@@ -132,13 +132,21 @@ pub fn load_hash_record(db_path: &Path, record_id: &str) -> AppResult<HashIndexR
     })
 }
 
-/// 更新记录名；调用方确保 `new_name` 非空。
+/// 更新记录名。`new_name` 前后空白会被 trim；为空时返回 `InvalidInput`，
+/// 与 `op_record_repo::rename_record` 保持一致。
 pub fn rename_hash_record(db_path: &Path, record_id: &str, new_name: &str) -> AppResult<()> {
+    let name = new_name.trim();
+    if name.is_empty() {
+        return Err(AppError::InvalidInput("记录名不能为空".to_string()));
+    }
     let conn = conn(db_path)?;
-    conn.execute(
+    let affected = conn.execute(
         "UPDATE hash_records SET record_name = ? WHERE record_id = ?",
-        params![new_name, record_id],
+        params![name, record_id],
     )?;
+    if affected == 0 {
+        return Err(AppError::NotFound(format!("记录不存在: {record_id}")));
+    }
     Ok(())
 }
 

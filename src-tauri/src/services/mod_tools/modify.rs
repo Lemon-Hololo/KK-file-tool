@@ -23,7 +23,7 @@ use std::{
 
 use chrono::Local;
 use uuid::Uuid;
-use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 use crate::{
     constants::mod_op_kind,
@@ -68,21 +68,23 @@ fn modify_zipmod(original: &Path, backup: &Path, keyword: &str) -> Result<(), St
             };
 
             if is_manifest {
-                let (name, content) = {
+                let (name, content, compression) = {
                     let mut entry = archive
                         .by_index(i)
                         .map_err(|e| format!("读取 manifest 失败: {e}"))?;
                     let name = entry.name().to_string();
+                    // 保留原条目的压缩方式，避免把 Stored/Bzip2 等强行改成 Deflated。
+                    let compression = entry.compression();
                     let mut content = String::new();
                     entry
                         .read_to_string(&mut content)
                         .map_err(|e| format!("读取 manifest 内容失败: {e}"))?;
-                    (name, content)
+                    (name, content, compression)
                 };
                 let modified = remove_game_tag(&content, keyword);
 
                 let opts: SimpleFileOptions =
-                    SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+                    SimpleFileOptions::default().compression_method(compression);
                 writer
                     .start_file(&name, opts)
                     .map_err(|e| format!("写入 manifest 失败: {e}"))?;

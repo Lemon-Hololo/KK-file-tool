@@ -17,9 +17,11 @@ import { useModToolsStore } from "../stores/modTools";
 import { useConfigStore } from "../stores/config";
 import { revealInExplorer } from "../services/task";
 import { DEFAULT_EXTREME_ROW_THRESHOLD, EXTREME_OVERSCAN, NORMAL_OVERSCAN } from "../constants/task";
+import { stripWindowsExtendedPrefix } from "../utils/path";
 import type { ModScanMatch } from "../types/modTools";
 import type { VirtualColumn } from "../types/virtualTable";
 import Panel from "./common/Panel.vue";
+import PreviewPanel from "./PreviewPanel.vue";
 import VirtualTable from "./common/VirtualTable.vue";
 
 const props = defineProps<{
@@ -46,12 +48,11 @@ const isExtreme = computed(() => {
 });
 
 const columns = computed<VirtualColumn[]>(() => [
-  { key: "filePath", label: "文件", minWidth: 360, ellipsis: true, resizable: true },
+  { key: "filePath", label: "文件", minWidth: 360, ellipsis: true, resizable: true, slotName: "filePath" },
   { key: "author", label: "作者", width: 140, ellipsis: true, resizable: true },
   { key: "guid", label: "GUID", minWidth: 200, ellipsis: true, resizable: true },
   { key: "version", label: "版本", width: 120, resizable: true },
-  { key: "matchedKeyword", label: "命中关键字", width: 140, resizable: true },
-  { key: "__actions", label: "目录", width: 92, slotName: "actions" }
+  { key: "matchedKeyword", label: "命中关键字", width: 140, resizable: true }
 ]);
 
 const statusText = computed(() => {
@@ -201,8 +202,18 @@ onBeforeUnmount(() => {
       selectable
       @selection-change="onSelectionChange"
     >
-      <template #actions="{ row }">
-        <el-button size="small" text @click.stop="openFolder(row.filePath)">打开</el-button>
+      <template #filePath="{ row }">
+        <PreviewPanel :path="row.filePath">
+          <button
+            type="button"
+            class="path-link"
+            :disabled="panelBusy"
+            :title="stripWindowsExtendedPrefix(row.filePath)"
+            @click.stop="openFolder(row.filePath)"
+          >
+            {{ stripWindowsExtendedPrefix(row.filePath) }}
+          </button>
+        </PreviewPanel>
       </template>
     </VirtualTable>
   </Panel>
@@ -294,5 +305,30 @@ onBeforeUnmount(() => {
 .scan-table {
   flex: 1;
   min-height: 0;
+}
+
+.path-link {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  color: var(--ff-accent);
+  cursor: pointer;
+  font: inherit;
+}
+
+.path-link:hover {
+  text-decoration: underline;
+}
+
+.path-link:disabled {
+  color: var(--ff-text-muted);
+  cursor: not-allowed;
+  text-decoration: none;
 }
 </style>

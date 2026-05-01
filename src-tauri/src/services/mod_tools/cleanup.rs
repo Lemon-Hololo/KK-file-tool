@@ -4,17 +4,19 @@
 //! - 重复 MOD：`guid + author + version` 相同且文件数大于 1；
 //! - 不同版本 MOD：`guid + author` 相同且版本数大于 1。
 //!
-//! 检查任务采用两段式：
-//! 1. 第一轮 WalkDir 只统计候选 `.zip/.zipmod` 数量；
-//! 2. 第二轮按固定 chunk 分块并行读取 manifest，并把结果增量推给前端。
+//! 检查任务采用单次 WalkDir：
+//! 1. 收集候选 `.zip/.zipmod` 路径到内存（仅 PathBuf，不读 manifest）；
+//! 2. 把 `len()` 作为进度的 total，按固定 chunk 分块并行读取 manifest；
+//! 3. 每个 chunk 处理完立刻聚合分组 map，并通过增量事件推给前端。
 //!
-//! 这样能避免同时持有"全量候选路径 + 全量解析结果 + 全量日志事件"。
+//! 这样既避免同时持有"全量解析结果 + 全量日志事件"，也避免之前"先扫一遍数总数、
+//! 再扫一遍读 manifest"重复 IO 的浪费。
 
 use std::{
     cmp::Ordering,
     collections::{hash_map::Entry, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{atomic::AtomicUsize, Arc},
+    sync::Arc,
     time::SystemTime,
 };
 
@@ -55,7 +57,7 @@ pub fn preview_mod_duplicates(
     let mut grouped: HashMap<(String, String, String), CollectSlot<ModIdentityFile>> =
         HashMap::new();
 
-    process_candidates(db_path, paths, &runtime, log.as_ref(), |batch| {
+    process_candidates(db_path, paths, &runtime, log.as_ref(), |batch, _processed| {
         for file in batch {
             push_collect_slot(
                 &mut grouped,
@@ -96,7 +98,7 @@ pub fn preview_mod_versions(
     let runtime = TaskRuntime::default();
     let mut grouped: HashMap<(String, String), CollectSlot<ModIdentityFile>> = HashMap::new();
 
-    process_candidates(db_path, paths, &runtime, log.as_ref(), |batch| {
+    process_candidates(db_path, paths, &runtime, log.as_ref(), |batch, _processed| {
         for file in batch {
             push_collect_slot(&mut grouped, (file.guid.clone(), file.author.clone()), file);
         }
@@ -183,57 +185,58 @@ pub async fn run_duplicate_scan(
     events::emit_state_changed(&app, &task_id, "Running");
     log.info("开始检查重复 MOD");
 
-    let total = count_candidates(&paths, &runtime);
-    events::emit_progress(&app, &task_id, stages::MOD_DUPLICATE, 0, total);
-
     let mut grouped: HashMap<(String, String, String), CollectSlot<ModIdentityFile>> =
         HashMap::new();
-    let mut processed = 0usize;
 
-    process_candidates(&app_state.db_path, &paths, &runtime, Some(&log), |batch| {
-        let mut touched = HashSet::new();
-        for file in batch {
-            processed += 1;
-            touched.insert((file.guid.clone(), file.author.clone(), file.version.clone()));
-            push_collect_slot(
-                &mut grouped,
-                (file.guid.clone(), file.author.clone(), file.version.clone()),
-                file,
-            );
-        }
+    process_candidates(
+        &app_state.db_path,
+        &paths,
+        &runtime,
+        Some(&log),
+        |batch, processed| {
+            let mut touched = HashSet::new();
+            for file in batch {
+                touched.insert((file.guid.clone(), file.author.clone(), file.version.clone()));
+                push_collect_slot(
+                    &mut grouped,
+                    (file.guid.clone(), file.author.clone(), file.version.clone()),
+                    file,
+                );
+            }
 
-        let partial = touched
-            .into_iter()
-            .filter_map(|(guid, author, version)| {
-                let slot = grouped.get(&(guid.clone(), author.clone(), version.clone()))?;
-                let mut files = slot.clone().into_vec();
-                if files.len() <= 1 {
-                    return None;
-                }
-                files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
-                Some(ModDuplicateGroup {
-                    group_id: duplicate_group_id(&guid, &author, &version),
-                    guid,
-                    author,
-                    version,
-                    files,
+            let partial = touched
+                .into_iter()
+                .filter_map(|(guid, author, version)| {
+                    let slot = grouped.get(&(guid.clone(), author.clone(), version.clone()))?;
+                    let mut files = slot.clone().into_vec();
+                    if files.len() <= 1 {
+                        return None;
+                    }
+                    files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+                    Some(ModDuplicateGroup {
+                        group_id: duplicate_group_id(&guid, &author, &version),
+                        guid,
+                        author,
+                        version,
+                        files,
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
 
-        if !partial.is_empty() {
-            events::emit_mod_duplicate_partial(
-                &app,
-                &ModDuplicatePartialPayload {
-                    task_id: task_id.clone(),
-                    groups: partial,
-                    done: false,
-                },
-            );
-        }
+            if !partial.is_empty() {
+                events::emit_mod_duplicate_partial(
+                    &app,
+                    &ModDuplicatePartialPayload {
+                        task_id: task_id.clone(),
+                        groups: partial,
+                        done: false,
+                    },
+                );
+            }
 
-        events::emit_progress(&app, &task_id, stages::MOD_DUPLICATE, processed, total);
-    })?;
+            events::emit_progress(&app, &task_id, stages::MOD_DUPLICATE, processed.done, processed.total);
+        },
+    )?;
 
     if runtime.is_cancelled() {
         runtime.set_status(TaskStatus::Cancelled);
@@ -281,64 +284,65 @@ pub async fn run_version_scan(
     events::emit_state_changed(&app, &task_id, "Running");
     log.info("开始检查不同版本 MOD");
 
-    let total = count_candidates(&paths, &runtime);
-    events::emit_progress(&app, &task_id, stages::MOD_VERSION, 0, total);
-
     let mut grouped: HashMap<(String, String), CollectSlot<ModIdentityFile>> = HashMap::new();
-    let mut processed = 0usize;
 
-    process_candidates(&app_state.db_path, &paths, &runtime, Some(&log), |batch| {
-        let mut touched = HashSet::new();
-        for file in batch {
-            processed += 1;
-            touched.insert((file.guid.clone(), file.author.clone()));
-            push_collect_slot(&mut grouped, (file.guid.clone(), file.author.clone()), file);
-        }
+    process_candidates(
+        &app_state.db_path,
+        &paths,
+        &runtime,
+        Some(&log),
+        |batch, processed| {
+            let mut touched = HashSet::new();
+            for file in batch {
+                touched.insert((file.guid.clone(), file.author.clone()));
+                push_collect_slot(&mut grouped, (file.guid.clone(), file.author.clone()), file);
+            }
 
-        let partial = touched
-            .into_iter()
-            .filter_map(|(guid, author)| {
-                let slot = grouped.get(&(guid.clone(), author.clone()))?;
-                let mut files = slot.clone().into_vec();
-                let versions: BTreeSet<String> =
-                    files.iter().map(|file| file.version.clone()).collect();
-                if versions.len() <= 1 {
-                    return None;
-                }
+            let partial = touched
+                .into_iter()
+                .filter_map(|(guid, author)| {
+                    let slot = grouped.get(&(guid.clone(), author.clone()))?;
+                    let mut files = slot.clone().into_vec();
+                    let versions: BTreeSet<String> =
+                        files.iter().map(|file| file.version.clone()).collect();
+                    if versions.len() <= 1 {
+                        return None;
+                    }
 
-                files.sort_by(|a, b| {
-                    compare_versions(&b.version, &a.version)
-                        .then_with(|| b.mtime.cmp(&a.mtime))
-                        .then_with(|| a.file_path.cmp(&b.file_path))
-                });
-                let latest_version = files
-                    .first()
-                    .map(|file| file.version.clone())
-                    .unwrap_or_default();
+                    files.sort_by(|a, b| {
+                        compare_versions(&b.version, &a.version)
+                            .then_with(|| b.mtime.cmp(&a.mtime))
+                            .then_with(|| a.file_path.cmp(&b.file_path))
+                    });
+                    let latest_version = files
+                        .first()
+                        .map(|file| file.version.clone())
+                        .unwrap_or_default();
 
-                Some(ModVersionGroup {
-                    group_id: version_group_id(&guid, &author),
-                    guid,
-                    author,
-                    latest_version,
-                    files,
+                    Some(ModVersionGroup {
+                        group_id: version_group_id(&guid, &author),
+                        guid,
+                        author,
+                        latest_version,
+                        files,
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>();
 
-        if !partial.is_empty() {
-            events::emit_mod_version_partial(
-                &app,
-                &ModVersionPartialPayload {
-                    task_id: task_id.clone(),
-                    groups: partial,
-                    done: false,
-                },
-            );
-        }
+            if !partial.is_empty() {
+                events::emit_mod_version_partial(
+                    &app,
+                    &ModVersionPartialPayload {
+                        task_id: task_id.clone(),
+                        groups: partial,
+                        done: false,
+                    },
+                );
+            }
 
-        events::emit_progress(&app, &task_id, stages::MOD_VERSION, processed, total);
-    })?;
+            events::emit_progress(&app, &task_id, stages::MOD_VERSION, processed.done, processed.total);
+        },
+    )?;
 
     if runtime.is_cancelled() {
         runtime.set_status(TaskStatus::Cancelled);
@@ -373,26 +377,20 @@ pub async fn run_version_scan(
     Ok(())
 }
 
-fn count_candidates(paths: &[String], runtime: &TaskRuntime) -> usize {
-    let mut total = 0usize;
-    for root in paths {
-        let ep = to_extended_length_path(Path::new(root));
-        for entry in WalkDir::new(&ep).into_iter().filter_map(|item| item.ok()) {
-            if runtime.is_cancelled() {
-                return total;
-            }
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy();
-            if is_zipmod(&name) {
-                total += 1;
-            }
-        }
-    }
-    total
+/// 处理进度。`done` 表示已发起 manifest 解析的文件数（不区分成功/失败），
+/// `total` 是预先收集到的候选总数；用作进度事件载荷。
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessProgress {
+    pub done: usize,
+    pub total: usize,
 }
 
+/// 单次 WalkDir 收集所有 `.zip/.zipmod` 候选；用 `len()` 作为进度 total，
+/// 然后按 chunk 并行解析 manifest，每个 chunk 完成后回调 `on_batch`，
+/// 由调用方决定如何聚合 / 推送增量结果。
+///
+/// 取消语义：扫描候选阶段每条 entry 检查 `runtime.is_cancelled()`；
+/// 处理阶段每个 chunk 边界检查；已经在 rayon 中调度的 manifest 解析会跑完。
 fn process_candidates<F>(
     db_path: &Path,
     paths: &[String],
@@ -401,16 +399,11 @@ fn process_candidates<F>(
     mut on_batch: F,
 ) -> Result<(), String>
 where
-    F: FnMut(Vec<ModIdentityFile>),
+    F: FnMut(Vec<ModIdentityFile>, ProcessProgress),
 {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(op_pipeline::resolve_thread_count(db_path).max(1))
-        .build()
-        .map_err(|e| format!("创建线程池失败: {e}"))?;
-
-    let counter = Arc::new(AtomicUsize::new(0));
-    let mut chunk = Vec::with_capacity(PROCESS_CHUNK_SIZE);
-
+    // 第一遍：收集候选 PathBuf。仅做轻量过滤（is_file + is_zipmod），
+    // 不读取 manifest，避免占用过多内存。
+    let mut candidates: Vec<PathBuf> = Vec::new();
     for root in paths {
         if let Some(log) = log {
             log.info(&format!("正在扫描路径: {root}"));
@@ -427,20 +420,35 @@ where
             if !is_zipmod(&name) {
                 continue;
             }
-            chunk.push(entry.path().to_path_buf());
-            if chunk.len() >= PROCESS_CHUNK_SIZE {
-                on_batch(process_chunk(
-                    &pool,
-                    std::mem::take(&mut chunk),
-                    log,
-                    &counter,
-                ));
-            }
+            candidates.push(entry.path().to_path_buf());
         }
     }
 
-    if !chunk.is_empty() {
-        on_batch(process_chunk(&pool, chunk, log, &counter));
+    let total = candidates.len();
+    if total == 0 {
+        return Ok(());
+    }
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(op_pipeline::resolve_thread_count(db_path).max(1))
+        .build()
+        .map_err(|e| format!("创建线程池失败: {e}"))?;
+
+    // 第二遍：分块并行解析 manifest，每块完成后立刻回调聚合。
+    let mut done = 0usize;
+    let mut iter = candidates.into_iter();
+    loop {
+        if runtime.is_cancelled() {
+            return Ok(());
+        }
+        let chunk: Vec<PathBuf> = iter.by_ref().take(PROCESS_CHUNK_SIZE).collect();
+        if chunk.is_empty() {
+            break;
+        }
+        let chunk_len = chunk.len();
+        let result = process_chunk(&pool, chunk, log);
+        done += chunk_len;
+        on_batch(result, ProcessProgress { done, total });
     }
 
     Ok(())
@@ -450,22 +458,16 @@ fn process_chunk(
     pool: &rayon::ThreadPool,
     chunk: Vec<PathBuf>,
     log: Option<&TaskLogContext>,
-    counter: &AtomicUsize,
 ) -> Vec<ModIdentityFile> {
     pool.install(|| {
         chunk
             .into_par_iter()
-            .filter_map(|path| read_identity_file(&path, log, counter))
+            .filter_map(|path| read_identity_file(&path, log))
             .collect()
     })
 }
 
-fn read_identity_file(
-    path: &Path,
-    log: Option<&TaskLogContext>,
-    counter: &AtomicUsize,
-) -> Option<ModIdentityFile> {
-    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+fn read_identity_file(path: &Path, log: Option<&TaskLogContext>) -> Option<ModIdentityFile> {
     if let Some(log) = log {
         log.info_path("正在处理 MOD", path);
     }

@@ -17,7 +17,7 @@ use crate::{
         op_pipeline::{resolve_io_concurrency_multiplier, resolve_thread_count},
     },
     utils::hash::hash_file_blake3,
-    utils::path::to_extended_length_path,
+    utils::path::{to_extended_length_path, to_user_friendly_path},
 };
 
 #[derive(Clone)]
@@ -54,7 +54,35 @@ async fn pause_point(runtime: &TaskRuntime) {
 /// # 取消 / 暂停
 /// 扫描阶段只响应取消；哈希调度阶段同时响应取消和暂停（已入队的哈希任务
 /// 会跑完，不再提交新任务）。
+///
+/// # 任务清理
+/// 不论成功 / 失败 / 取消，都会在 `AppState.tasks` 中移除自身条目，
+/// 与 `mod_tools::scan` / `cleanup` 行为一致。
 pub async fn run_dedup(
+    app: AppHandle,
+    app_state: Arc<AppState>,
+    task_id: String,
+    paths: Vec<String>,
+    config: DedupConfig,
+    runtime: Arc<TaskRuntime>,
+) -> AppResult<()> {
+    let result = run_dedup_inner(
+        app.clone(),
+        app_state.clone(),
+        task_id.clone(),
+        paths,
+        config,
+        runtime,
+    )
+    .await;
+
+    // 任务终态清理：从 tasks 表移除，避免 HashMap 单调增长。
+    app_state.tasks.lock().unwrap().remove(&task_id);
+
+    result
+}
+
+async fn run_dedup_inner(
     app: AppHandle,
     app_state: Arc<AppState>,
     task_id: String,
@@ -263,7 +291,7 @@ pub async fn run_dedup(
             .entry(item.hash.clone())
             .or_default()
             .push(FileEntry {
-                abs_path: item.path.display().to_string(),
+                abs_path: to_user_friendly_path(&item.path),
                 size: item.size,
                 mtime: item.mtime,
                 ctime: item.ctime,
@@ -428,7 +456,7 @@ pub async fn run_dedup(
             .iter()
             .map(|x| HashIndexEntry {
                 hash: x.hash.clone(),
-                file_path: x.path.display().to_string(),
+                file_path: to_user_friendly_path(&x.path),
                 file_size: x.size,
                 mtime: x.mtime,
                 ctime: x.ctime,

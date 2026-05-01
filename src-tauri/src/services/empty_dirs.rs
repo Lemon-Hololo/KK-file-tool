@@ -348,12 +348,23 @@ fn selected_success_items(
 }
 
 fn path_key(path: &str) -> String {
+    // Path 比较的归一化 key：
+    // - Windows 路径分隔符统一为 '/'，避免 `D:\a\b` 与 `D:/a/b` 误判；
+    // - 末尾斜杠去掉；
+    // - to_lowercase 仅作用于 ASCII 部分（业务路径基本是 ASCII + 个别中日韩），
+    //   足以应对 NTFS 大小写不敏感语义。
     path.replace('\\', "/").trim_end_matches('/').to_lowercase()
 }
 
+/// 判断 `child` 是否就是 `parent` 自身或它的子路径（按归一化 key 比较）。
+///
+/// 用 `format!("{parent_key}/")` 作为前缀守卫，避免 `/foo` 误匹配 `/foobar`。
 fn is_same_or_child(parent: &str, child: &str) -> bool {
     let parent_key = path_key(parent);
     let child_key = path_key(child);
+    if parent_key.is_empty() {
+        return child_key.is_empty();
+    }
     child_key == parent_key || child_key.starts_with(&format!("{parent_key}/"))
 }
 

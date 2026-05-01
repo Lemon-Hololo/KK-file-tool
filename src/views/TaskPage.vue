@@ -279,14 +279,12 @@ onMounted(async () => {
 }
 .path-tags {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 4px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding-bottom: 2px;
   max-height: 120px;
-  flex-direction: column;
-  align-content: flex-start;
 }
 .path-tag {
   flex-shrink: 0;

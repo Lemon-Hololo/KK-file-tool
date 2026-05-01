@@ -5,8 +5,10 @@ import { computed } from "vue";
 
 import { revealInExplorer } from "../services/task";
 import { useModToolsStore } from "../stores/modTools";
+import { stripWindowsExtendedPrefix } from "../utils/path";
 import type { VirtualColumn } from "../types/virtualTable";
 import OpsPanel from "./common/OpsPanel.vue";
+import PreviewPanel from "./PreviewPanel.vue";
 
 const props = defineProps<{
   paths: string[];
@@ -16,12 +18,11 @@ const props = defineProps<{
 const store = useModToolsStore();
 
 const columns: VirtualColumn[] = [
-  { key: "oldPath", label: "源文件", minWidth: 320, ellipsis: true, resizable: true },
+  { key: "oldPath", label: "源文件", minWidth: 320, ellipsis: true, resizable: true, slotName: "oldPath" },
   { key: "folderName", label: "目标子目录", width: 180, ellipsis: true, resizable: true },
   { key: "newPath", label: "目标路径", minWidth: 320, ellipsis: true, resizable: true },
   { key: "status", label: "状态", width: 90, resizable: true },
-  { key: "message", label: "信息", minWidth: 180, ellipsis: true, resizable: true },
-  { key: "__actions", label: "目录", width: 92, slotName: "actions" }
+  { key: "message", label: "信息", minWidth: 180, ellipsis: true, resizable: true }
 ];
 
 const rows = computed<any[]>(
@@ -72,10 +73,45 @@ async function openFolder(path: string) {
     :check-rollback="checkRollback"
     :rollback="rollback"
   >
-    <template #actions="{ row }">
-      <el-button size="small" text :disabled="store.busy.organize" @click.stop="openFolder(row.oldPath)">
-        打开
-      </el-button>
+    <template #oldPath="{ row }">
+      <PreviewPanel :path="row.oldPath">
+        <button
+          type="button"
+          class="path-link"
+          :disabled="store.busy.organize"
+          :title="stripWindowsExtendedPrefix(row.oldPath)"
+          @click.stop="openFolder(row.oldPath)"
+        >
+          {{ stripWindowsExtendedPrefix(row.oldPath) }}
+        </button>
+      </PreviewPanel>
     </template>
   </OpsPanel>
 </template>
+
+<style scoped>
+.path-link {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  color: var(--ff-accent);
+  cursor: pointer;
+  font: inherit;
+}
+
+.path-link:hover {
+  text-decoration: underline;
+}
+
+.path-link:disabled {
+  color: var(--ff-text-muted);
+  cursor: not-allowed;
+  text-decoration: none;
+}
+</style>

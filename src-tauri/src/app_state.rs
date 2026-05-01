@@ -71,7 +71,7 @@ impl AppState {
         }
 
         let db_path = resolve_db_path_with_fallback(&app_data_dir);
-        schema::init_schema(&db_path).map_err(AppError::Db)?;
+        schema::init_schema(&db_path)?;
 
         Ok(Arc::new(Self {
             app_data_dir,

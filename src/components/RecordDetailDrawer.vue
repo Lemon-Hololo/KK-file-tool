@@ -97,7 +97,7 @@ const columns: VirtualColumn[] = [
           :columns="columns"
           :item-height="36"
           :overscan="12"
-          row-key="hash"
+          row-key="filePath"
           column-config-key="records:hash-detail"
           fit-width
           class="detail-table"

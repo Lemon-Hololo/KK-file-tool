@@ -282,7 +282,7 @@ const PreviewContent = defineComponent({
 
 .pc-path {
   font-size: 11px;
-  color: var(--muted-text);
+  color: var(--ff-text-muted);
   margin-bottom: 8px;
   word-break: break-all;
 }
@@ -298,7 +298,7 @@ const PreviewContent = defineComponent({
 .pc-meta {
   margin-top: 8px;
   font-size: 12px;
-  color: var(--muted-text);
+  color: var(--ff-text-muted);
 }
 
 .pc-img-wrap {

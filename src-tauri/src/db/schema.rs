@@ -8,7 +8,10 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::models::AppSettings;
+use crate::{
+    error::{AppError, AppResult},
+    models::AppSettings,
+};
 
 /// 初始化（或迁移）数据库 schema；幂等。
 ///
@@ -18,8 +21,8 @@ use crate::models::AppSettings;
 /// - 历史库补列：`thread_count` / `log_max_length` / `io_concurrency_multiplier` /
 ///   `extreme_row_threshold` / `text_preview_max_kb` / `zip_preview_max_entries` /
 ///   `mod_scan_default_keyword` / `suffix_default_target`（重复列错误忽略）。
-pub fn init_schema(db_path: &Path) -> Result<(), String> {
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+pub fn init_schema(db_path: &Path) -> AppResult<()> {
+    let conn = Connection::open(db_path).map_err(|e| AppError::Db(e.to_string()))?;
 
     conn.execute_batch(
         r#"
@@ -164,12 +167,12 @@ pub fn init_schema(db_path: &Path) -> Result<(), String> {
     CREATE INDEX IF NOT EXISTS idx_mod_op_records_kind ON mod_op_records(kind);
     "#,
     )
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| AppError::Db(e.to_string()))?;
 
     let exists: Option<i64> = conn
         .query_row("SELECT id FROM app_settings WHERE id = 1", [], |r| r.get(0))
         .optional()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppError::Db(e.to_string()))?;
 
     if exists.is_none() {
         let d = AppSettings::default();
@@ -186,10 +189,12 @@ pub fn init_schema(db_path: &Path) -> Result<(), String> {
                 d.theme_mode
             ],
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| AppError::Db(e.to_string()))?;
     }
 
-    // 历史库补列：已存在时 SQLite 返回 "duplicate column" 错误，可忽略。
+    // 历史库补列：已存在时 SQLite 返回 "duplicate column" 错误，对此忽略；
+    // 其它错误（磁盘损坏 / 权限不足）也吞掉是有意为之——schema 演进失败不应阻塞启动，
+    // 真正读写 settings 时还会触发底层 sqlite 错误，会被正常上抛。
     // 顺序无关紧要；DEFAULT 与 `AppSettings::Default` / `config.rs::DEFAULT_*` 保持一致。
     let _ = conn.execute(
         "ALTER TABLE app_settings ADD COLUMN thread_count INTEGER NOT NULL DEFAULT 0",
