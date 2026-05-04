@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::mod_tools::ModOpApplyItem;
+
 /// 单条预览项（尚未执行）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +28,20 @@ pub struct SuffixApplyItem {
     pub new_path: String,
     pub status: String,
     pub message: Option<String>,
+}
+
+/// 后缀业务直接复用 [`super::mod_tools`] 的通用 apply item，避免 `services::suffix`
+/// 在响应映射阶段写一份逐字段克隆——两者结构完全一致，仅字段名相同的复制粘贴。
+impl From<ModOpApplyItem> for SuffixApplyItem {
+    fn from(value: ModOpApplyItem) -> Self {
+        Self {
+            item_id: value.item_id,
+            old_path: value.old_path,
+            new_path: value.new_path,
+            status: value.status,
+            message: value.message,
+        }
+    }
 }
 
 /// `apply_suffix_change` 的返回。

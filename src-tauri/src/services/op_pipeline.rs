@@ -113,6 +113,30 @@ pub fn record_name_or_timestamp(record_name: Option<String>) -> String {
     record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string())
 }
 
+/// 按 `selected_old_paths` 过滤预览列表（`None` 表示不过滤，保留全部）。
+///
+/// 后缀修改、Mod 重命名、Mod 归类的 apply 阶段都接受可选的
+/// `selected_old_paths` 把预览结果再筛一遍——这套"none 即全选 / Some(list) 转
+/// `HashSet` 后 retain"模式各模块写过三份。统一在这里处理避免漂移：未来如果
+/// 改成大小写不敏感比较或归一化路径，只需要改这一处。
+///
+/// `get_old_path` 闭包从 item 取出"老路径"字段；调用方传入对应字段访问器
+/// （`SuffixPreviewItem` / `ModRenamePreviewItem` / `ModOrganizePreviewItem`
+/// 三者的字段名都叫 `old_path`，但类型不同，所以无法用统一 trait 抽象）。
+pub fn filter_by_selected_old_paths<T, F>(
+    items: &mut Vec<T>,
+    selected_old_paths: Option<Vec<String>>,
+    get_old_path: F,
+) where
+    F: Fn(&T) -> &str,
+{
+    let Some(selected) = selected_old_paths else {
+        return;
+    };
+    let set: HashSet<String> = selected.into_iter().collect();
+    items.retain(|x| set.contains(get_old_path(x)));
+}
+
 /// `parallel_move` 每条输入的执行结果：
 /// `(old_path, new_path, 是否成功, 错误消息)`。
 pub type MoveOutcome = (String, String, bool, Option<String>);

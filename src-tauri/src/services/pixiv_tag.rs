@@ -454,9 +454,9 @@ pub async fn run_pixiv_tag_scan(
 
     let thread_count = op_pipeline::resolve_thread_count(&state.db_path);
     let io_mult = op_pipeline::resolve_io_concurrency_multiplier(&state.db_path);
-    let permits = (thread_count.saturating_mul(io_mult))
-        .max(1)
-        .min(FETCH_CONCURRENCY_HARD_CAP);
+    let permits = thread_count
+        .saturating_mul(io_mult)
+        .clamp(1, FETCH_CONCURRENCY_HARD_CAP);
     let semaphore = Arc::new(Semaphore::new(permits));
 
     events::emit_log(
@@ -687,9 +687,7 @@ fn finalize_failed(app: &tauri::AppHandle, state: &Arc<AppState>, task_id: &str,
             done: true,
         },
     );
-    events::emit_state_changed(app, task_id, "Failed");
-    events::emit_task_failed(app, task_id, message);
-    state.remove_task(task_id);
+    events::finalize_failed_long_task(app, state, task_id, message);
 }
 
 /// 把单张图片移动到 `<output_dir>/<sanitized_tag>/<basename>`。返回新的用户友好路径。

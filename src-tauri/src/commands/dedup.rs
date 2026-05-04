@@ -32,6 +32,9 @@ pub async fn start_dedup_task(
     let (task_id, runtime) = state.create_task(task_id);
 
     let state_clone = state.inner().clone();
+    // 复制一份给 spawn 闭包外的失败收尾使用：`run_dedup` 会消费 `state_clone`，
+    // 失败路径需要独立的所有权来调 `finalize_failed_long_task`。
+    let state_for_finalize = state_clone.clone();
     let app_clone = app.clone();
     let task_id_clone = task_id.clone();
 
@@ -47,8 +50,12 @@ pub async fn start_dedup_task(
         .await;
 
         if let Err(err) = result {
-            events::emit_state_changed(&app_clone, &task_id_clone, "Failed");
-            events::emit_task_failed(&app_clone, &task_id_clone, &err.to_string());
+            events::finalize_failed_long_task(
+                &app_clone,
+                &state_for_finalize,
+                &task_id_clone,
+                &err.to_string(),
+            );
         }
     });
 

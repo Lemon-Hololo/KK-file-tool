@@ -123,7 +123,11 @@ pub fn apply_empty_dir_cleanup(
         total: response.total,
         success: response.success,
         failed: response.failed,
-        items: response.items.into_iter().map(to_apply_item).collect(),
+        items: response
+            .items
+            .into_iter()
+            .map(EmptyDirApplyItem::from)
+            .collect(),
     })
 }
 
@@ -372,16 +376,6 @@ fn is_same_or_child(parent: &str, child: &str) -> bool {
         return child_key.is_empty();
     }
     child_key == parent_key || child_key.starts_with(&format!("{parent_key}/"))
-}
-
-fn to_apply_item(item: crate::models::ModOpApplyItem) -> EmptyDirApplyItem {
-    EmptyDirApplyItem {
-        item_id: item.item_id,
-        old_path: item.old_path,
-        new_path: item.new_path,
-        status: item.status,
-        message: item.message,
-    }
 }
 
 fn to_summary(summary: op_record_repo::OpRecordSummary) -> EmptyDirRecordSummary {

@@ -161,10 +161,11 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 │   │       preview.rs / settings.rs / records.rs /
 │   │       suffix.rs / empty_dirs.rs / mod_tools.rs / pixiv_tag.rs
 │   └── utils/
-│       └── mod.rs / path.rs / hash.rs / filename.rs
+│       └── mod.rs / path.rs / hash.rs / filename.rs / time.rs
 │           # filename: split_name_ext / resolve_conflict / resolve_conflict_with_reserved /
 │           #          strip_conflict_suffix / normalize_suffix / extract_bracket /
 │           #          sanitize_filename / normalize_brackets
+│           # time:     system_time_to_secs（Metadata::modified/created → 秒级 Unix 时间戳）
 ```
 
 ---
@@ -209,6 +210,7 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 - `resolve_text_preview_max_bytes(db_path)` / `resolve_zip_preview_max_entries(db_path)`：预览上限。
 - `rayon_pool(thread_count)`：构造本次操作专用的 rayon 线程池，所有需要本地 rayon 池的业务都复用它，避免各模块重复 `ThreadPoolBuilder` 错误处理。
 - `record_name_or_timestamp(record_name)`：记录名兜底统一为 `YYYY-MM-DD_HH-MM-SS`；哈希记录与记录型 apply 都走这里，避免多处硬编码格式串。
+- `filter_by_selected_old_paths(items, selected_old_paths, get_old_path)`：apply 阶段把预览列表按用户勾选的 `selected_old_paths` 再筛一遍。`None` 视为全选；`Some(list)` 转 `HashSet` 后 retain。后缀修改 / Mod 重命名 / Mod 归类的 apply 都必须走这里，**禁止再写 inline 的 `let set = HashSet::from(...); preview.retain(...)`**。
 - `rename_or_copy_delete(src, dst)`：rename 失败若是跨卷（Windows `ERROR_NOT_SAME_DEVICE` 17 / Unix `EXDEV` 18）退化为 `std::fs::copy` + `std::fs::remove_file`。`parallel_move`、`rollback`、去重后的普通文件移动、Pixiv 按 tag 移动都走它，所以目标目录 / 备份目录可跨盘配置。
 - `parallel_move(pairs, create_parent, thread_count)`：并行 `rename_or_copy_delete`；`create_parent = true` 自动建目标父目录（归类需要）。
 - `parallel_execute<F>(pairs, thread_count, executor)`：并行执行自定义闭包（如 modify 的"备份+重写 zip"或 cleanup 的"remove_file 不备份"）。
@@ -221,6 +223,8 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 **撤回的冲突保护**：rollback 是两阶段——先顺序用 `utils::filename::resolve_conflict_with_reserved` 给每条 item 解析最终目标（原路径已被外部新文件占用时自动加 ` (1)` / ` (2)` ... 后缀避让，预留集合保证同批次并行也不会重复分配 `(1)`），再并行 rename。冲突时仍记 `apply_success = true`，"已恢复到 X" 备注写进 `rollback_error` 列（该列既显示错误也显示备注）。这样用户在 apply 之后又往原目录放了同名文件、再点撤回的，**已存在的文件不会被静默覆盖**——撤回回来的文件会落到 `<原文件名> (N).<ext>`。空文件夹清理走自己的 rollback 实现，不参与此冲突解析（目录路径被非目录文件占用时直接报错）。
 
 **Mod 备份型操作的标准前置**：`mod_tools::backup::prepare_mod_backup(db_path, selected_file_paths) -> PreparedBackup { rollback_enabled, record_id, pairs }` 是 cleanup / modify 公用入口，把"读 settings → 生成 record_id → 构造 `(原路径, 备份路径)` → 同批次同名撞名用 `resolve_conflict_with_reserved` 兜底"打成一个调用。`rollback_enabled = false` 时 pairs 的 new_path 全是空串，executor 据此切换到"真删 / in-place 改写"分支。**新增 Mod 备份型业务必须复用这个入口**，不要回到各自手抄 settings 读取 / Uuid 生成 / reserved 集合维护那套，否则只要逻辑漂移一处下次踩坑得在两份代码里同步修。
+
+**模型层复用**：`SuffixApplyItem` / `EmptyDirApplyItem` 都为 `From<ModOpApplyItem>` 提供了 impl —— 业务侧把 `op_pipeline` 返回的 `ModOpApplyResponse.items` 直接 `.into_iter().map(SuffixApplyItem::from)` 转换即可，**不要在 service 里再写逐字段克隆的小函数**（`to_apply_item` / 闭包重映射）。结构后续若漂移也会被编译器立刻拦下来。
 
 ### 5.2 前端
 
@@ -474,7 +478,7 @@ Mod 各面板（Rename / Organize / Duplicate / Version / Scan）与去重分组
 2. **命令注册**：新 `#[tauri::command]` 必须在 `lib.rs::invoke_handler!` 注册并写前端 service。
 3. **记录型操作**：走 `op_record_repo + op_pipeline + OpsPanel`，不要复制 suffix / mod_tools 当模板。非纯 rename 用 `persist_apply_with_executor`，item 记 `old_path = 原始, new_path = 备份`。
 4. **数据库迁移**：只允许 `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ... ADD COLUMN`，不改已有列。迁移写在 `schema.rs::init_schema` 末尾。
-5. **IPC 事件**：新事件登记 `constants.rs::events`，写 `services/events.rs` emit 函数，在前端 store 的 `initEvents` 监听。
+5. **IPC 事件**：新事件登记 `constants.rs::events`，写 `services/events.rs` emit 函数，在前端 store 的 `initEvents` 监听。长任务 spawn 失败兜底统一调 `events::finalize_failed_long_task(app, state, task_id, err)`：发 `task_state_changed=Failed` + `task_failed` 事件 + `state.remove_task`。partial done 信号需要业务侧自行先发（不同任务 payload 不同），再调本 helper。**禁止在每个命令模块再抄一份 emit_state_changed + emit_task_failed + remove_task 三件套**。
 6. **路径**：`std::fs` 入参一律 `to_extended_length_path`；返回前端的路径一律 `to_user_friendly_path`。
 7. **并发**：线程数从 `op_pipeline::resolve_thread_count` 取，不要 inline 读 `settings.thread_count`。
 8. **文件名**：用 `utils::filename` 里的函数，不要自己实现一份。

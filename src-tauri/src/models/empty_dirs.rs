@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::mod_tools::ModOpApplyItem;
+
 /// 空文件夹预览项（尚未执行）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +25,20 @@ pub struct EmptyDirApplyItem {
     pub new_path: String,
     pub status: String,
     pub message: Option<String>,
+}
+
+/// 空文件夹清理直接复用 [`super::mod_tools`] 的通用 apply item，把 `services::empty_dirs`
+/// 里逐字段克隆的 `to_apply_item` 帮手压缩为 `Into::into`。
+impl From<ModOpApplyItem> for EmptyDirApplyItem {
+    fn from(value: ModOpApplyItem) -> Self {
+        Self {
+            item_id: value.item_id,
+            old_path: value.old_path,
+            new_path: value.new_path,
+            status: value.status,
+            message: value.message,
+        }
+    }
 }
 
 /// `apply_empty_dir_cleanup` 的返回。

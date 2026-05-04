@@ -223,10 +223,7 @@ pub fn apply_mod_rename(
 
     preview.retain(|x| x.warn.is_none() && x.old_path != x.new_path);
 
-    if let Some(selected) = selected_old_paths {
-        let set: std::collections::HashSet<String> = selected.into_iter().collect();
-        preview.retain(|x| set.contains(&x.old_path));
-    }
+    op_pipeline::filter_by_selected_old_paths(&mut preview, selected_old_paths, |x| &x.old_path);
 
     let pairs: Vec<(String, String)> = preview
         .into_iter()

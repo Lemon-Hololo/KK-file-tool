@@ -21,13 +21,6 @@ use crate::{
     },
 };
 
-/// 长任务启动后的兜底失败收尾：发失败状态 / 失败事件，并清理任务表。
-fn finalize_spawned_task_failed(app: &AppHandle, state: &Arc<AppState>, task_id: &str, err: &str) {
-    events::emit_state_changed(app, task_id, "Failed");
-    events::emit_task_failed(app, task_id, err);
-    state.remove_task(task_id);
-}
-
 // ---- 重命名 ----
 
 /// 预览 Mod 重命名。
@@ -136,7 +129,7 @@ pub async fn start_mod_duplicate_task(
                     done: true,
                 },
             );
-            finalize_spawned_task_failed(&app_clone, &state_clone, &task_id_clone, &err);
+            events::finalize_failed_long_task(&app_clone, &state_clone, &task_id_clone, &err);
         }
     });
 
@@ -213,7 +206,7 @@ pub async fn start_mod_version_task(
                     done: true,
                 },
             );
-            finalize_spawned_task_failed(&app_clone, &state_clone, &task_id_clone, &err);
+            events::finalize_failed_long_task(&app_clone, &state_clone, &task_id_clone, &err);
         }
     });
 
@@ -366,7 +359,7 @@ pub async fn start_mod_scan_task(
         .await;
 
         if let Err(err) = result {
-            finalize_spawned_task_failed(&app_clone, &state_clone, &task_id_clone, &err);
+            events::finalize_failed_long_task(&app_clone, &state_clone, &task_id_clone, &err);
         }
     });
 

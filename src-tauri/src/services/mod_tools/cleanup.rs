@@ -17,7 +17,6 @@ use std::{
     collections::{hash_map::Entry, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Arc,
-    time::SystemTime,
 };
 
 use rayon::prelude::*;
@@ -42,7 +41,10 @@ use crate::{
         },
         op_pipeline,
     },
-    utils::path::{to_extended_length_path, to_user_friendly_path},
+    utils::{
+        path::{to_extended_length_path, to_user_friendly_path},
+        time::system_time_to_secs,
+    },
 };
 
 const PROCESS_CHUNK_SIZE: usize = 256;
@@ -504,8 +506,8 @@ fn read_identity_file(path: &Path, log: Option<&TaskLogContext>) -> Option<ModId
         version: meta.version,
         author: meta.author,
         size: metadata.len(),
-        mtime: system_time_to_timestamp(metadata.modified().ok()),
-        ctime: system_time_to_timestamp(metadata.created().ok()),
+        mtime: system_time_to_secs(metadata.modified().ok()),
+        ctime: system_time_to_secs(metadata.created().ok()),
     })
 }
 
@@ -558,13 +560,6 @@ fn apply_mod_delete(
         prepared.pairs,
         executor,
     )
-}
-
-fn system_time_to_timestamp(value: Option<SystemTime>) -> i64 {
-    value
-        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 fn compare_versions(a: &str, b: &str) -> Ordering {

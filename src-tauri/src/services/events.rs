@@ -5,10 +5,13 @@
 //!
 //! 注意：事件名是 IPC 契约的一部分，改动需同步 `src/` 前端监听处。
 
+use std::sync::Arc;
+
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
 
 use crate::{
+    app_state::AppState,
     constants::events,
     models::{
         DuplicateGroup, ModDuplicatePartialPayload, ModScanCompletedPayload,
@@ -99,4 +102,22 @@ pub fn emit_mod_version_partial(app: &AppHandle, payload: &ModVersionPartialPayl
 /// 关闭 running 状态。
 pub fn emit_pixiv_tag_partial(app: &AppHandle, payload: &PixivTagPartialPayload) {
     let _ = app.emit(events::PIXIV_TAG_PARTIAL, payload);
+}
+
+/// 长任务失败时的统一收尾：发"失败"状态事件 + `task_failed` 事件，并把任务从
+/// `AppState` 的运行表中移除。
+///
+/// 各 `start_*_task` 命令在 spawn 的闭包里收到 `Err` 后调本函数即可——避免每个
+/// 命令模块都写一份 emit + remove_task 的样板。**partial done 信号需要业务侧
+/// 自行先发**（不同长任务的 partial payload 类型不同，本函数不便强行抽象），
+/// 然后再调本函数完成"状态切到 Failed + 解锁运行表"两步。
+pub fn finalize_failed_long_task(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    task_id: &str,
+    err: &str,
+) {
+    emit_state_changed(app, task_id, "Failed");
+    emit_task_failed(app, task_id, err);
+    state.remove_task(task_id);
 }

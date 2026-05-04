@@ -98,10 +98,7 @@ pub fn apply_suffix_change(
 
     let mut preview = preview_suffix_change(paths, &target_suffix)?;
 
-    if let Some(selected) = selected_old_paths {
-        let set: std::collections::HashSet<String> = selected.into_iter().collect();
-        preview.retain(|x| set.contains(&x.old_path));
-    }
+    op_pipeline::filter_by_selected_old_paths(&mut preview, selected_old_paths, |x| &x.old_path);
 
     let pairs: Vec<(String, String)> = preview
         .into_iter()
@@ -131,17 +128,7 @@ pub fn apply_suffix_change(
         total: resp.total,
         success: resp.success,
         failed: resp.failed,
-        items: resp
-            .items
-            .into_iter()
-            .map(|i| SuffixApplyItem {
-                item_id: i.item_id,
-                old_path: i.old_path,
-                new_path: i.new_path,
-                status: i.status,
-                message: i.message,
-            })
-            .collect(),
+        items: resp.items.into_iter().map(SuffixApplyItem::from).collect(),
     })
 }
 
@@ -206,17 +193,7 @@ pub fn rollback_suffix_change(
         success: r.success,
         failed: r.failed,
         skipped_missing: r.skipped_missing,
-        items: r
-            .items
-            .into_iter()
-            .map(|i| SuffixApplyItem {
-                item_id: i.item_id,
-                old_path: i.old_path,
-                new_path: i.new_path,
-                status: i.status,
-                message: i.message,
-            })
-            .collect(),
+        items: r.items.into_iter().map(SuffixApplyItem::from).collect(),
     })
 }
 

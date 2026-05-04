@@ -20,6 +20,7 @@ use crate::{
     },
     utils::hash::hash_file_blake3,
     utils::path::{to_extended_length_path, to_user_friendly_path},
+    utils::time::system_time_to_secs,
 };
 
 #[derive(Clone)]
@@ -151,19 +152,11 @@ async fn run_dedup_inner(
                     }
                 };
 
-                let mtime = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
-
-                let ctime = meta
-                    .created()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(mtime);
+                let mtime = system_time_to_secs(meta.modified().ok());
+                // ctime 在某些平台 / FS 上可能没有；这里按"无 ctime 时退回 mtime"约定，
+                // 让保留策略仍能给出稳定的排序基准。
+                let ctime_raw = system_time_to_secs(meta.created().ok());
+                let ctime = if ctime_raw == 0 { mtime } else { ctime_raw };
 
                 let size = meta.len();
                 *by_size.entry(size).or_insert(0) += 1;
