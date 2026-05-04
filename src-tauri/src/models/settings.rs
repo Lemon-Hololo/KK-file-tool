@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{
     DEFAULT_EXTREME_ROW_THRESHOLD, DEFAULT_IO_CONCURRENCY_MULTIPLIER, DEFAULT_KEEP_POLICY,
-    DEFAULT_LOG_MAX_LENGTH, DEFAULT_MOD_SCAN_KEYWORD, DEFAULT_SUFFIX_TARGET,
+    DEFAULT_LOG_MAX_LENGTH, DEFAULT_MOD_ROLLBACK_ENABLED, DEFAULT_MOD_SCAN_KEYWORD,
+    DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE, DEFAULT_PIXIV_TAG_API_BASE, DEFAULT_SUFFIX_TARGET,
     DEFAULT_TEXT_PREVIEW_MAX_KB, DEFAULT_THEME_MODE, DEFAULT_THREAD_COUNT,
     DEFAULT_ZIP_PREVIEW_MAX_ENTRIES,
 };
@@ -47,6 +48,44 @@ pub struct AppSettings {
     pub mod_scan_default_keyword: String,
     /// 后缀修改的默认目标（不带点）。
     pub suffix_default_target: String,
+
+    // ---- Mod 工具回滚 ----
+    /// 是否启用 Mod 工具的备份/回滚机制（重复删除 / 不同版本删除 / 移除版本限制）。
+    ///
+    /// 关闭后这三类操作不再创建备份，操作记录的 `rollback_enabled = false`，
+    /// 记录管理页的"撤回"按钮会被置灰。重命名 / 归类不受此开关影响。
+    pub mod_rollback_enabled: bool,
+    /// Mod 备份目录；为 `None` 或空串时使用 `<exe_dir>/mod-backups`。
+    ///
+    /// 同条记录的所有备份会落到 `<root>/<record_id>/<原文件名>`，
+    /// 以便人工按记录批量清理。跨卷场景下备份会自动走 copy + delete 兜底。
+    pub mod_backup_dir: Option<String>,
+
+    // ---- Pixiv 标签整理 ----
+    /// Pixiv 标签接口的 base URL；最终请求 `<base><pid>`。
+    pub pixiv_tag_api_base: String,
+    /// 排除的 tag 列表；这些 tag 不会作为虚拟表的列出现，避免噪音列。
+    pub pixiv_excluded_tags: Vec<String>,
+    /// 可选 Pixiv Cookie（PHPSESSID 等）；填了之后能拿到 R-18 / 关注限定等受限 tag。
+    pub pixiv_cookie: Option<String>,
+    /// 可选 HTTP / HTTPS / SOCKS5 代理 URL；中国大陆访问 Pixiv 一般要配。
+    ///
+    /// 形如 `http://127.0.0.1:7890`、`https://...`、`socks5://127.0.0.1:1080`。
+    /// 留空时按 reqwest 默认行为走系统环境变量（`HTTP_PROXY` / `HTTPS_PROXY`）。
+    pub pixiv_proxy: Option<String>,
+    /// 是否在面板上用 `translation.en` 替代原 tag 显示（同时点击移动也用译名做目录）。
+    ///
+    /// 关闭时全部沿用 Pixiv 返回的原 tag（多为日文）。同一开关在配置中心和任务面板上
+    /// 都暴露，用户可以在不离开任务面板的情况下切换。**Pixiv 响应没有 en 译名时
+    /// 该开关对那条 tag 不生效**——回落到原 tag。
+    pub pixiv_use_translation: bool,
+    /// Pixiv 拉取的每分钟最大请求数（限速防黑）。
+    ///
+    /// 60 = 每秒 1 条；与 `Semaphore` 的并发上限正交——并发只控制"同时在飞的请求数"，
+    /// 这个值控制"任意 60 秒滚动窗口内总请求数"。把每个 worker 的拉取调度排到一条共享
+    /// "下一可用时刻"队列上，保证整个长任务的速率不超过 `per_minute / 60` 次/秒。
+    /// `0` 视为"不限速"（仅给测试 / 高级用户用，UI 限制最小为 1）。
+    pub pixiv_rate_limit_per_minute: i32,
 }
 
 impl Default for AppSettings {
@@ -66,6 +105,14 @@ impl Default for AppSettings {
             zip_preview_max_entries: DEFAULT_ZIP_PREVIEW_MAX_ENTRIES,
             mod_scan_default_keyword: DEFAULT_MOD_SCAN_KEYWORD.to_string(),
             suffix_default_target: DEFAULT_SUFFIX_TARGET.to_string(),
+            mod_rollback_enabled: DEFAULT_MOD_ROLLBACK_ENABLED,
+            mod_backup_dir: None,
+            pixiv_tag_api_base: DEFAULT_PIXIV_TAG_API_BASE.to_string(),
+            pixiv_excluded_tags: Vec::new(),
+            pixiv_cookie: None,
+            pixiv_proxy: None,
+            pixiv_use_translation: false,
+            pixiv_rate_limit_per_minute: DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE,
         }
     }
 }

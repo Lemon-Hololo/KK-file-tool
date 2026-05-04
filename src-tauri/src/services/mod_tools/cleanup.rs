@@ -37,6 +37,7 @@ use crate::{
         events,
         logging::TaskLogContext,
         mod_tools::{
+            backup,
             zipmod::{is_zipmod, read_manifest_from_zip},
             MOD_OP_TABLES,
         },
@@ -501,29 +502,41 @@ fn apply_mod_delete(
         ));
     }
 
-    let ts = Local::now().timestamp();
-    let pairs: Vec<(String, String)> = selected_file_paths
-        .into_iter()
-        .map(|path| {
-            let backup = backup_path_for_delete(&path, ts);
-            (path, backup)
-        })
-        .collect();
+    // 读 settings → 生成 record_id → 构造 (原路径, 备份路径或空串) 列表，全部交给
+    // backup::prepare_mod_backup 处理；同批次同名 zipmod 的撞名也由它解决。
+    let prepared = backup::prepare_mod_backup(db_path, selected_file_paths)?;
 
     if let Some(log) = &log {
-        for (old_path, _) in &pairs {
-            log.info(&format!("准备删除 Mod: {old_path}"));
+        for (old_path, _) in &prepared.pairs {
+            if prepared.rollback_enabled {
+                log.info(&format!("准备删除 Mod（备份）: {old_path}"));
+            } else {
+                log.info(&format!("准备删除 Mod（不备份）: {old_path}"));
+            }
         }
     }
 
-    let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
-    op_pipeline::persist_apply_rename_pairs(db_path, MOD_OP_TABLES, kind, name, paths, pairs, false)
-}
+    let executor = move |old: &str, new: &str| -> Result<(), String> {
+        if new.is_empty() {
+            // 关闭回滚 → 真删
+            std::fs::remove_file(to_extended_length_path(Path::new(old))).map_err(|e| e.to_string())
+        } else {
+            op_pipeline::rename_or_copy_delete(Path::new(old), Path::new(new))
+        }
+    };
 
-fn backup_path_for_delete(original: &str, ts: i64) -> String {
-    let short = uuid::Uuid::new_v4().simple().to_string();
-    let short = &short[..8];
-    format!("{original}.kk-file-tool-del-{ts}-{short}")
+    let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+    op_pipeline::persist_apply_with_executor(
+        db_path,
+        MOD_OP_TABLES,
+        &prepared.record_id,
+        prepared.rollback_enabled,
+        kind,
+        name,
+        paths,
+        prepared.pairs,
+        executor,
+    )
 }
 
 fn system_time_to_timestamp(value: Option<SystemTime>) -> i64 {

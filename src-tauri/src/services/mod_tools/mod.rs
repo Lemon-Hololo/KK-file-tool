@@ -20,6 +20,7 @@ use crate::{
     services::op_pipeline,
 };
 
+pub mod backup;
 pub mod cleanup;
 pub mod modify;
 pub mod organize;
@@ -61,12 +62,20 @@ pub fn get_record_detail(
 }
 
 /// 检查撤回：返回 `new_path` 仍存在 / 缺失的统计。
+///
+/// 记录创建时若 `rollback_enabled = false`，立即返回错误避免做无意义的存在性检查。
 pub fn check_rollback(
     db_path: &std::path::Path,
     record_id: &str,
     item_ids: Option<Vec<i64>>,
 ) -> AppResult<ModOpRollbackCheck> {
-    op_pipeline::check_rollback(db_path, MOD_OP_TABLES, record_id, item_ids)
+    let detail = crate::db::op_record_repo::get_record_detail(db_path, MOD_OP_TABLES, record_id)?;
+    if !detail.summary.rollback_enabled {
+        return Err(AppError::InvalidInput(
+            "该记录创建时未启用回滚，无法撤回".to_string(),
+        ));
+    }
+    op_pipeline::check_rollback_with_detail(db_path, &detail, item_ids.as_ref())
 }
 
 /// 执行撤回：把已成功条目 `new_path → old_path` 回滚。
@@ -104,6 +113,7 @@ fn to_summary(s: crate::db::op_record_repo::OpRecordSummary) -> ModOpRecordSumma
         total_items: s.total_items,
         success_items: s.success_items,
         rollback_status: s.rollback_status,
+        rollback_enabled: s.rollback_enabled,
     }
 }
 

@@ -49,3 +49,21 @@ pub const DEFAULT_MOD_SCAN_KEYWORD: &str = "Koikatsu";
 
 /// 默认后缀目标（不含点）。
 pub const DEFAULT_SUFFIX_TARGET: &str = "txt";
+
+/// 默认是否启用 Mod 工具备份/回滚机制。
+///
+/// 关闭后，重复删除 / 不同版本删除 / 移除版本限制三类操作不再创建备份，
+/// 记录主表的 `rollback_enabled = 0`，对应记录在记录管理页的"撤回"按钮置灰。
+pub const DEFAULT_MOD_ROLLBACK_ENABLED: bool = true;
+
+/// Pixiv 标签接口默认 base URL；最终请求 URL 拼接为 `<base><pid>`。
+///
+/// base 后是否带斜杠都接受——业务侧 [`crate::services::pixiv_tag`] 会自动补齐。
+pub const DEFAULT_PIXIV_TAG_API_BASE: &str = "https://www.pixiv.net/ajax/illust/";
+
+/// Pixiv tag 拉取的默认每分钟最大请求数。
+///
+/// 实际间隔 = `60s / per_minute`；60 即"每秒 1 条"，对 Pixiv 这种公开 ajax 接口
+/// 是相当保守的速率，不会触发常见的 IP 限流策略。需要更激进的批量可在设置里调高，
+/// 但同时要看 Cookie / 代理的状态——纯游客身份建议保留 60 或更低。
+pub const DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE: i32 = 60;

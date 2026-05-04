@@ -4,9 +4,13 @@
 //! [`op_pipeline`] 执行写库 + 并行 rename。记录管理 (list / detail /
 //! rollback / delete) 同样通过 [`op_pipeline`] 与 `op_record_repo` 完成。
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use chrono::Local;
+use uuid::Uuid;
 use walkdir::WalkDir;
 
 use crate::{
@@ -18,7 +22,7 @@ use crate::{
     },
     services::op_pipeline,
     utils::{
-        filename::{normalize_suffix, resolve_conflict, split_name_ext},
+        filename::{normalize_suffix, resolve_conflict_with_reserved, split_name_ext},
         path::to_user_friendly_path,
     },
 };
@@ -38,6 +42,9 @@ fn build_target_path(path: &Path, target_suffix: &str) -> Option<PathBuf> {
 }
 
 /// 预览：对 `paths` 下每个文件计算新路径，并标记是否会与现有文件冲突。
+///
+/// 用 `resolve_conflict_with_reserved` 处理"同批次同主名不同后缀"的撞名（例如
+/// `foo.tmp` 与 `foo.bak` 同时改成目标后缀 `.txt`，第二个会自动落到 `foo (1).txt`）。
 pub fn preview_suffix_change(
     paths: &[String],
     target_suffix_input: &str,
@@ -48,6 +55,7 @@ pub fn preview_suffix_change(
     }
 
     let mut result = vec![];
+    let mut reserved: HashSet<String> = HashSet::new();
     for root in paths {
         for e in WalkDir::new(root).into_iter().filter_map(|x| x.ok()) {
             if !e.file_type().is_file() {
@@ -63,7 +71,7 @@ pub fn preview_suffix_change(
                 continue;
             }
 
-            let (final_target, conflict) = resolve_conflict(candidate);
+            let (final_target, conflict) = resolve_conflict_with_reserved(candidate, &mut reserved);
 
             result.push(SuffixPreviewItem {
                 old_path: to_user_friendly_path(&old_path),
@@ -102,10 +110,14 @@ pub fn apply_suffix_change(
         .collect();
 
     let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+    let record_id = Uuid::new_v4().to_string();
 
+    // 后缀业务不参与 Mod 工具的回滚开关，永远可撤回。
     let resp = op_pipeline::persist_apply_rename_pairs(
         db_path,
         SUFFIX_TABLES,
+        &record_id,
+        true,
         &target_suffix,
         name,
         paths,
@@ -116,6 +128,7 @@ pub fn apply_suffix_change(
     Ok(SuffixApplyResponse {
         record_id: resp.record_id,
         record_name: resp.record_name,
+        rollback_enabled: resp.rollback_enabled,
         total: resp.total,
         success: resp.success,
         failed: resp.failed,
@@ -222,5 +235,6 @@ fn to_summary(s: op_record_repo::OpRecordSummary) -> SuffixRecordSummary {
         total_items: s.total_items,
         success_items: s.success_items,
         rollback_status: s.rollback_status,
+        rollback_enabled: s.rollback_enabled,
     }
 }

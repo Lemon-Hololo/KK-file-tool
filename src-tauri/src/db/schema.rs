@@ -20,7 +20,10 @@ use crate::{
 /// - 保证 `app_settings` 至少有一行；
 /// - 历史库补列：`thread_count` / `log_max_length` / `io_concurrency_multiplier` /
 ///   `extreme_row_threshold` / `text_preview_max_kb` / `zip_preview_max_entries` /
-///   `mod_scan_default_keyword` / `suffix_default_target`（重复列错误忽略）。
+///   `mod_scan_default_keyword` / `suffix_default_target` /
+///   `mod_rollback_enabled` / `mod_backup_dir`（设置项）；
+///   `rollback_enabled`（三类记录主表，标记单条记录创建时是否启用回滚）。
+///   重复列错误忽略。
 pub fn init_schema(db_path: &Path) -> AppResult<()> {
     let conn = Connection::open(db_path).map_err(|e| AppError::Db(e.to_string()))?;
 
@@ -226,6 +229,57 @@ pub fn init_schema(db_path: &Path) -> AppResult<()> {
     );
     let _ = conn.execute(
         "ALTER TABLE app_settings ADD COLUMN suffix_default_target TEXT NOT NULL DEFAULT 'txt'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN mod_rollback_enabled INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN mod_backup_dir TEXT NULL",
+        [],
+    );
+
+    // 三类记录主表新增 rollback_enabled 列：旧记录默认 1（保持可撤回），
+    // 新记录由业务层根据当时的设置决定（关闭回滚时写 0，撤回按钮置灰）。
+    let _ = conn.execute(
+        "ALTER TABLE mod_op_records ADD COLUMN rollback_enabled INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE suffix_change_records ADD COLUMN rollback_enabled INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE empty_dir_records ADD COLUMN rollback_enabled INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+
+    // Pixiv 标签整理设置：API base / 排除 tag（JSON 数组字符串）/ 可选 Cookie。
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN pixiv_tag_api_base TEXT NOT NULL DEFAULT 'https://www.pixiv.net/ajax/illust/'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN pixiv_excluded_tags TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN pixiv_cookie TEXT NULL",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN pixiv_proxy TEXT NULL",
+        [],
+    );
+    // 是否用 translation.en 替代原 tag 显示。默认关闭，符合"无破坏性升级"原则。
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN pixiv_use_translation INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    // Pixiv 限速：每分钟最大请求数。0 = 不限速；UI 限制最小 1。默认 60（每秒 1 条）。
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN pixiv_rate_limit_per_minute INTEGER NOT NULL DEFAULT 60",
         [],
     );
 

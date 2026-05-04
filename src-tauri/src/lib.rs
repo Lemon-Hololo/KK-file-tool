@@ -90,7 +90,12 @@ pub fn run() {
             commands::mod_tools::rollback_mod_op,
             commands::mod_tools::delete_mod_op_record,
             commands::mod_tools::rename_mod_op_record,
-            commands::mod_tools::start_mod_scan_task
+            commands::mod_tools::start_mod_scan_task,
+            // pixiv tag tools
+            commands::pixiv_tag::scan_pixiv_image_candidates,
+            commands::pixiv_tag::start_pixiv_tag_scan_task,
+            commands::pixiv_tag::fetch_pixiv_tag_single,
+            commands::pixiv_tag::move_image_by_tag_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");

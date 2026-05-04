@@ -104,6 +104,8 @@ pub struct ModOpApplyResponse {
     pub record_name: String,
     /// `"rename"` 或 `"organize"`（见 `constants::mod_op_kind`）。
     pub kind: String,
+    /// 创建时是否启用回滚；关闭时撤回按钮在 UI 上置灰，后端 rollback 也会拒绝。
+    pub rollback_enabled: bool,
     pub total: usize,
     pub success: usize,
     pub failed: usize,
@@ -122,6 +124,9 @@ pub struct ModOpRecordSummary {
     pub success_items: usize,
     /// `"applied"` / `"partially_rolled_back"` / `"rolled_back"`。
     pub rollback_status: String,
+    /// 创建记录时是否启用回滚；用户在设置中关闭"启用 Mod 操作回滚"时为 false，
+    /// 此时该记录不可撤回（后端会拒绝、前端按钮置灰）。
+    pub rollback_enabled: bool,
 }
 
 /// 详情中的 item。

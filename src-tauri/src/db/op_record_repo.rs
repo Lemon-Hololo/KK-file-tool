@@ -18,7 +18,6 @@
 use std::path::Path;
 
 use rusqlite::{params, Connection};
-use uuid::Uuid;
 
 use crate::error::{AppError, AppResult};
 
@@ -48,6 +47,9 @@ pub struct OpRecordSummary {
     pub extra: Option<String>,
     pub created_at: i64,
     pub rollback_status: String,
+    /// 创建记录时是否启用回滚机制；目前只有 Mod 工具的备份型操作会写入 `false`。
+    /// 撤回前应检查此字段，`false` 时拒绝撤回。
+    pub rollback_enabled: bool,
     pub total_items: usize,
     pub success_items: usize,
 }
@@ -75,32 +77,37 @@ fn conn(db_path: &Path) -> AppResult<Connection> {
     Connection::open(db_path).map_err(|e| AppError::Db(e.to_string()))
 }
 
-/// 插入记录主表；自动生成 UUID 作为 `record_id` 返回。
+/// 插入记录主表。
+///
+/// `record_id` 由调用方预生成（业务侧通常需要在 apply 之前就知道 record_id 用于
+/// 计算备份路径）。`rollback_enabled` 为 `false` 时该记录的"撤回"按钮在 UI 上
+/// 会被置灰，后端 `op_pipeline::rollback` 也会拒绝执行。
 ///
 /// `extra_value` 仅在 `tables.extra_summary_column` 为 `Some` 时写入；
 /// 否则必须传入空字符串或调用方不传（签名上仍接收 `&str` 以简化 API）。
 pub fn create_record(
     db_path: &Path,
     tables: OpRecordTables,
+    record_id: &str,
     record_name: &str,
     extra_value: &str,
+    rollback_enabled: bool,
     source_paths_json: &str,
     created_at: i64,
-) -> AppResult<String> {
+) -> AppResult<()> {
     let conn = conn(db_path)?;
-    let record_id = Uuid::new_v4().to_string();
 
     let sql = if let Some(col) = tables.extra_summary_column {
         format!(
-            "INSERT INTO {t}(record_id, record_name, {col}, source_paths, created_at, rollback_status) \
-             VALUES(?, ?, ?, ?, ?, 'applied')",
+            "INSERT INTO {t}(record_id, record_name, {col}, source_paths, created_at, rollback_status, rollback_enabled) \
+             VALUES(?, ?, ?, ?, ?, 'applied', ?)",
             t = tables.record_table,
             col = col
         )
     } else {
         format!(
-            "INSERT INTO {t}(record_id, record_name, source_paths, created_at, rollback_status) \
-             VALUES(?, ?, ?, ?, 'applied')",
+            "INSERT INTO {t}(record_id, record_name, source_paths, created_at, rollback_status, rollback_enabled) \
+             VALUES(?, ?, ?, ?, 'applied', ?)",
             t = tables.record_table
         )
     };
@@ -113,19 +120,26 @@ pub fn create_record(
                 record_name,
                 extra_value,
                 source_paths_json,
-                created_at
+                created_at,
+                rollback_enabled as i32,
             ],
         )
         .map_err(|e| AppError::Db(e.to_string()))?;
     } else {
         conn.execute(
             &sql,
-            params![record_id, record_name, source_paths_json, created_at],
+            params![
+                record_id,
+                record_name,
+                source_paths_json,
+                created_at,
+                rollback_enabled as i32,
+            ],
         )
         .map_err(|e| AppError::Db(e.to_string()))?;
     }
 
-    Ok(record_id)
+    Ok(())
 }
 
 /// 批量插入 item（事务）。返回每条插入后的 `id`（顺序与输入一致）。
@@ -191,6 +205,7 @@ pub fn list_records(
     let sql = format!(
         r#"
         SELECT r.record_id, r.record_name, r.{extra}, r.created_at, r.rollback_status,
+               r.rollback_enabled,
                (SELECT COUNT(1) FROM {it} i WHERE i.record_id = r.record_id) AS total_items,
                (SELECT COUNT(1) FROM {it} i WHERE i.record_id = r.record_id AND i.apply_success = 1) AS success_items
         FROM {rt} r{where_clause}
@@ -213,8 +228,9 @@ pub fn list_records(
             extra: r.get::<_, Option<String>>(2)?,
             created_at: r.get(3)?,
             rollback_status: r.get(4)?,
-            total_items: r.get::<_, i64>(5)? as usize,
-            success_items: r.get::<_, i64>(6)? as usize,
+            rollback_enabled: r.get::<_, i64>(5)? != 0,
+            total_items: r.get::<_, i64>(6)? as usize,
+            success_items: r.get::<_, i64>(7)? as usize,
         })
     };
 
@@ -243,6 +259,7 @@ pub fn get_record_detail(
     let summary_sql = format!(
         r#"
         SELECT r.record_id, r.record_name, r.{extra}, r.created_at, r.rollback_status,
+               r.rollback_enabled,
                (SELECT COUNT(1) FROM {it} i WHERE i.record_id = r.record_id) AS total_items,
                (SELECT COUNT(1) FROM {it} i WHERE i.record_id = r.record_id AND i.apply_success = 1) AS success_items
         FROM {rt} r
@@ -261,8 +278,9 @@ pub fn get_record_detail(
                 extra: r.get::<_, Option<String>>(2)?,
                 created_at: r.get(3)?,
                 rollback_status: r.get(4)?,
-                total_items: r.get::<_, i64>(5)? as usize,
-                success_items: r.get::<_, i64>(6)? as usize,
+                rollback_enabled: r.get::<_, i64>(5)? != 0,
+                total_items: r.get::<_, i64>(6)? as usize,
+                success_items: r.get::<_, i64>(7)? as usize,
             })
         })
         .map_err(|e| AppError::Db(e.to_string()))?;

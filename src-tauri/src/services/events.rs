@@ -12,7 +12,7 @@ use crate::{
     constants::events,
     models::{
         DuplicateGroup, ModDuplicatePartialPayload, ModScanCompletedPayload,
-        ModVersionPartialPayload, TaskLogPayload, TaskProgressPayload,
+        ModVersionPartialPayload, PixivTagPartialPayload, TaskLogPayload, TaskProgressPayload,
     },
 };
 
@@ -90,4 +90,13 @@ pub fn emit_mod_duplicate_partial(app: &AppHandle, payload: &ModDuplicatePartial
 
 pub fn emit_mod_version_partial(app: &AppHandle, payload: &ModVersionPartialPayload) {
     let _ = app.emit(events::MOD_VERSION_PARTIAL, payload);
+}
+
+/// Pixiv 标签拉取的增量事件。
+///
+/// 一次扫描会发多次 `done = false` 的 partial（每批若干 PID 完成），
+/// 任务终态时发一次 `done = true`（`items` 可能为空）。前端依靠 `done`
+/// 关闭 running 状态。
+pub fn emit_pixiv_tag_partial(app: &AppHandle, payload: &PixivTagPartialPayload) {
+    let _ = app.emit(events::PIXIV_TAG_PARTIAL, payload);
 }

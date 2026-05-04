@@ -37,6 +37,7 @@ import DedupPanel from "../components/DedupPanel.vue";
 import SuffixPanel from "../components/SuffixPanel.vue";
 import EmptyDirsPanel from "../components/EmptyDirsPanel.vue";
 import ModToolsPanel from "../components/ModToolsPanel.vue";
+import PixivTagPanel from "../components/PixivTagPanel.vue";
 
 const taskStore = useTaskStore();
 const runtimeStore = useRuntimeStore();
@@ -44,7 +45,7 @@ const recordStore = useRecordStore();
 const previewStore = usePreviewStore();
 
 const paths = useStorage<string[]>("taskPaths", []);
-const activeTab = useStorage<"dedup" | "suffix" | "emptyDirs" | "mod">("taskActiveTab", "dedup");
+const activeTab = useStorage<"dedup" | "suffix" | "emptyDirs" | "pixiv" | "mod">("taskActiveTab", "dedup");
 const activeSubTab = useStorage<"rename" | "organize" | "duplicates" | "versions" | "scan">("modToolsTab", "rename");
 const pathInput = ref("");
 
@@ -52,6 +53,7 @@ const mainTabs = [
   { label: "去重", value: "dedup" },
   { label: "后缀修改", value: "suffix" },
   { label: "空文件夹清理", value: "emptyDirs" },
+  { label: "Pixiv 标签", value: "pixiv" },
   { label: "Mod 工具", value: "mod" }
 ];
 
@@ -75,8 +77,8 @@ const activeTabValue = computed({
       (v === "rename" || v === "organize" || v === "duplicates" || v === "versions" || v === "scan")
     ) {
       activeSubTab.value = v as "rename" | "organize" | "duplicates" | "versions" | "scan";
-    } else if (v === "dedup" || v === "suffix" || v === "emptyDirs" || v === "mod") {
-      activeTab.value = v as "dedup" | "suffix" | "emptyDirs" | "mod";
+    } else if (v === "dedup" || v === "suffix" || v === "emptyDirs" || v === "pixiv" || v === "mod") {
+      activeTab.value = v as "dedup" | "suffix" | "emptyDirs" | "pixiv" | "mod";
     }
   }
 });
@@ -221,6 +223,11 @@ onMounted(async () => {
         />
         <EmptyDirsPanel
           v-show="activeTab === 'emptyDirs'"
+          :paths="paths"
+          :ensure-normalized-paths="ensureNormalizedPaths"
+        />
+        <PixivTagPanel
+          v-show="activeTab === 'pixiv'"
           :paths="paths"
           :ensure-normalized-paths="ensureNormalizedPaths"
         />

@@ -13,6 +13,8 @@ pub mod events {
     pub const MOD_SCAN_COMPLETED: &str = "mod_scan_completed";
     pub const MOD_DUPLICATE_PARTIAL: &str = "mod_duplicate_partial";
     pub const MOD_VERSION_PARTIAL: &str = "mod_version_partial";
+    /// Pixiv 标签拉取增量结果（每批若干 PID 的 tags 或 error）。
+    pub const PIXIV_TAG_PARTIAL: &str = "pixiv_tag_partial";
 }
 
 pub mod stages {
@@ -21,6 +23,8 @@ pub mod stages {
     pub const MOD_SCAN: &str = "mod_scan";
     pub const MOD_DUPLICATE: &str = "mod_duplicate";
     pub const MOD_VERSION: &str = "mod_version";
+    /// Pixiv 标签拉取阶段（用于进度事件 stage 字段）。
+    pub const PIXIV_TAG: &str = "pixiv_tag";
 }
 
 pub mod log_level {

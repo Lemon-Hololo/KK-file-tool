@@ -17,6 +17,15 @@ export interface OpApplyItem {
 export interface OpApplyResponse {
   recordId: string;
   recordName: string;
+  /**
+   * 创建记录时是否启用回滚。
+   *
+   * 目前只有 Mod 工具的备份型操作（重复删除 / 不同版本删除 / 移除版本限制）
+   * 在用户关闭"启用 Mod 操作回滚"设置时会写入 `false`，记录管理页 / 面板里
+   * 的"撤回"按钮应据此置灰。其它业务（后缀 / 空目录清理 / Mod 重命名 /
+   * Mod 归类）一律 `true`。
+   */
+  rollbackEnabled: boolean;
   total: number;
   success: number;
   failed: number;
@@ -32,6 +41,8 @@ export type OpRecordSummary<Extra = Record<string, never>> = {
   successItems: number;
   /** `"applied"` / `"partially_rolled_back"` / `"rolled_back"`。 */
   rollbackStatus: string;
+  /** 创建记录时是否启用回滚；`false` 时该记录的"撤回"按钮置灰。 */
+  rollbackEnabled: boolean;
 } & Extra;
 
 /** 记录详情里的单条 item。 */

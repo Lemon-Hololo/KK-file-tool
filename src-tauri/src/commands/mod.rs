@@ -8,6 +8,7 @@ pub mod empty_dirs;
 pub mod mod_tools;
 pub mod move_file;
 pub mod path;
+pub mod pixiv_tag;
 pub mod preview;
 pub mod records;
 pub mod runtime;

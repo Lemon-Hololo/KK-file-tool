@@ -1,18 +1,29 @@
 //! 移除 `.zipmod` 内 manifest.xml 中 `<game>KEYWORD</game>` 标签的"版本限制修改"。
 //!
-//! # 执行流程（每个文件）
+//! # 执行流程（每个文件，启用回滚时）
 //! 1. 把原文件字节拷贝到 `backup_path`；
 //! 2. 把原 zip 的所有条目重新写入一个临时文件，其中 `manifest.xml` 条目用
 //!    去掉 `<game>KEYWORD</game>` 的新内容替换，其余条目用 `raw_copy_file`
 //!    原样复制（保持压缩字节，零重编码）；
 //! 3. 原子替换：`rename(temp → original)`。
 //!
+//! 关闭回滚时跳过第 1 步（不创建备份），直接走第 2/3 步。
+//!
 //! 失败时会清理临时文件与备份，保持原文件不动。
 //!
 //! # 撤回
-//! 记录写入 `old_path = 原文件`, `new_path = 备份路径`；
+//! 启用回滚时：记录写入 `old_path = 原文件`, `new_path = 备份路径`；
 //! `op_pipeline::rollback` 的默认行为 `rename(new_path → old_path)`
 //! 正好把备份覆盖回原文件，完成撤回。
+//!
+//! 关闭回滚时：item 的 `new_path` 写空字符串，记录主表的
+//! `rollback_enabled = false`，撤回会被后端 / 前端共同拒绝。
+//!
+//! # 备份目录
+//! 备份位置由 [`crate::services::mod_tools::backup`] 解析；用户配置优先，
+//! 否则落在 `<exe_dir>/mod-backups/<record_id>/<原文件名>`。
+//! 临时文件 [`temp_sibling_path`] 故意保留在原文件同目录——`rename(temp → original)`
+//! 必须同卷才能原子替换，备份位置可以在别处但临时文件不行。
 
 use std::{
     fs::File,
@@ -29,7 +40,11 @@ use crate::{
     constants::mod_op_kind,
     error::{AppError, AppResult},
     models::ModOpApplyResponse,
-    services::{logging::TaskLogContext, mod_tools::MOD_OP_TABLES, op_pipeline},
+    services::{
+        logging::TaskLogContext,
+        mod_tools::{backup, MOD_OP_TABLES},
+        op_pipeline,
+    },
     utils::path::to_extended_length_path,
 };
 
@@ -42,12 +57,25 @@ pub fn remove_game_tag(content: &str, keyword: &str) -> String {
     content.replace(&tag, "")
 }
 
-/// 备份原 zip，再重写一份移除了指定 `<game>` 标签的 zip 替换原文件。
-fn modify_zipmod(original: &Path, backup: &Path, keyword: &str) -> Result<(), String> {
+/// 重写 zip 文件移除指定 `<game>` 标签。
+///
+/// `backup` 为 `Some(p)` 时把原文件 copy 到 `p`（用于撤回）；为 `None` 时
+/// 跳过备份，节约一次 IO 与磁盘空间。无论哪种模式，临时文件都在原文件同
+/// 目录以保 `rename(temp → original)` 原子替换。
+fn modify_zipmod(original: &Path, backup: Option<&Path>, keyword: &str) -> Result<(), String> {
     let ep_original = to_extended_length_path(original);
-    let ep_backup = to_extended_length_path(backup);
 
-    std::fs::copy(&ep_original, &ep_backup).map_err(|e| format!("备份失败: {e}"))?;
+    if let Some(backup_path) = backup {
+        // 启用回滚：先备份。备份路径可能跨卷，std::fs::copy 天然支持。
+        if let Some(parent) = backup_path.parent() {
+            if !to_extended_length_path(parent).exists() {
+                std::fs::create_dir_all(to_extended_length_path(parent))
+                    .map_err(|e| format!("创建备份目录失败: {e}"))?;
+            }
+        }
+        let ep_backup = to_extended_length_path(backup_path);
+        std::fs::copy(&ep_original, &ep_backup).map_err(|e| format!("备份失败: {e}"))?;
+    }
 
     let temp = temp_sibling_path(original);
     let ep_temp = to_extended_length_path(&temp);
@@ -107,7 +135,9 @@ fn modify_zipmod(original: &Path, backup: &Path, keyword: &str) -> Result<(), St
 
     if let Err(e) = rewrite() {
         let _ = std::fs::remove_file(&ep_temp);
-        let _ = std::fs::remove_file(&ep_backup);
+        if let Some(backup_path) = backup {
+            let _ = std::fs::remove_file(to_extended_length_path(backup_path));
+        }
         return Err(e);
     }
 
@@ -131,18 +161,16 @@ fn temp_sibling_path(original: &Path) -> PathBuf {
     parent.join(format!("{stem}.kk-file-tool-tmp-{short}"))
 }
 
-/// 生成备份路径：`{原文件}.kk-file-tool-bak-{timestamp}-{uuid8}`。
-fn backup_path_for(original: &str, ts: i64) -> String {
-    let short = Uuid::new_v4().simple().to_string();
-    let short = &short[..8];
-    format!("{original}.kk-file-tool-bak-{ts}-{short}")
-}
-
 /// 应用"移除版本限制"并持久化为 Mod 操作记录。
 ///
 /// - `paths`：当前任务的输入路径（仅用于记录元数据中的 `source_paths`）；
 /// - `keyword`：要从 `manifest.xml` 中移除的 `<game>KEYWORD</game>` 关键字；
 /// - `selected_file_paths`：要修改的具体 `.zipmod` 文件列表（由前端按用户勾选传入）。
+///
+/// 行为分支：
+/// - 用户开启"启用 Mod 操作回滚"（默认）：备份到 `<backup_root>/<record_id>/<filename>`，
+///   写入可撤回记录；
+/// - 关闭：in-place 改写不留备份，记录主表 `rollback_enabled = false`，撤回按钮置灰。
 pub fn apply_mod_modify_version(
     db_path: &Path,
     paths: &[String],
@@ -159,24 +187,29 @@ pub fn apply_mod_modify_version(
         return Err(AppError::InvalidInput("未选择任何文件".to_string()));
     }
 
-    let ts = Local::now().timestamp();
-    let pairs: Vec<(String, String)> = selected_file_paths
-        .into_iter()
-        .map(|p| {
-            let backup = backup_path_for(&p, ts);
-            (p, backup)
-        })
-        .collect();
+    // 同 cleanup：读 settings → 生成 record_id → 算备份对，全部交给
+    // backup::prepare_mod_backup 处理。多个源目录同名 zipmod 撞名也由它兜底。
+    let prepared = backup::prepare_mod_backup(db_path, selected_file_paths)?;
 
     let keyword_arc = Arc::new(keyword_trim);
     let executor = {
         let kw = keyword_arc.clone();
         let log = log.clone();
-        move |original: &str, backup: &str| -> Result<(), String> {
+        let with_backup = prepared.rollback_enabled;
+        move |original: &str, backup_path: &str| -> Result<(), String> {
             if let Some(log) = &log {
-                log.info(&format!("正在修改版本限制: {original}"));
+                if with_backup {
+                    log.info(&format!("正在修改版本限制（备份）: {original}"));
+                } else {
+                    log.info(&format!("正在修改版本限制（不备份）: {original}"));
+                }
             }
-            modify_zipmod(Path::new(original), Path::new(backup), &kw)
+            let backup_opt = if backup_path.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(backup_path))
+            };
+            modify_zipmod(Path::new(original), backup_opt.as_deref(), &kw)
         }
     };
 
@@ -185,10 +218,12 @@ pub fn apply_mod_modify_version(
     op_pipeline::persist_apply_with_executor(
         db_path,
         MOD_OP_TABLES,
+        &prepared.record_id,
+        prepared.rollback_enabled,
         mod_op_kind::MODIFY,
         name,
         paths,
-        pairs,
+        prepared.pairs,
         executor,
     )
 }

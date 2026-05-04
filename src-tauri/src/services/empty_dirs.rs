@@ -11,6 +11,7 @@ use std::{
 };
 
 use chrono::Local;
+use uuid::Uuid;
 
 use crate::{
     constants::empty_dir_op_kind,
@@ -101,9 +102,13 @@ pub fn apply_empty_dir_cleanup(
         .collect();
 
     let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+    let record_id = Uuid::new_v4().to_string();
+    // 空文件夹清理不参与 Mod 工具的回滚开关，永远可撤回。
     let response = op_pipeline::persist_apply_results(
         db_path,
         EMPTY_DIR_TABLES,
+        &record_id,
+        true,
         empty_dir_op_kind::DELETE,
         name,
         paths,
@@ -114,6 +119,7 @@ pub fn apply_empty_dir_cleanup(
         record_id: response.record_id,
         record_name: response.record_name,
         kind: response.kind,
+        rollback_enabled: response.rollback_enabled,
         total: response.total,
         success: response.success,
         failed: response.failed,
@@ -387,6 +393,7 @@ fn to_summary(summary: op_record_repo::OpRecordSummary) -> EmptyDirRecordSummary
         total_items: summary.total_items,
         success_items: summary.success_items,
         rollback_status: summary.rollback_status,
+        rollback_enabled: summary.rollback_enabled,
     }
 }
 

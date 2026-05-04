@@ -40,6 +40,16 @@ export const useConfigStore = defineStore("config", {
       // 工具默认值
       modScanDefaultKeyword: "Koikatsu",
       suffixDefaultTarget: "txt",
+      // Mod 工具回滚
+      modRollbackEnabled: true,
+      modBackupDir: "",
+      // Pixiv 标签整理
+      pixivTagApiBase: "https://www.pixiv.net/ajax/illust/",
+      pixivExcludedTags: [],
+      pixivCookie: "",
+      pixivProxy: "",
+      pixivUseTranslation: false,
+      pixivRateLimitPerMinute: 60,
     } as AppSettings,
 
     dbPathInfo: null as DbPathInfo | null,

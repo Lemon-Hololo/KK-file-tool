@@ -13,5 +13,6 @@ pub mod logging;
 pub mod mod_tools;
 pub mod move_file;
 pub mod op_pipeline;
+pub mod pixiv_tag;
 pub mod preview;
 pub mod suffix;

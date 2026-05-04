@@ -7,6 +7,7 @@ use std::{
 
 use chrono::Local;
 use rayon::prelude::*;
+use uuid::Uuid;
 use walkdir::WalkDir;
 
 use crate::{
@@ -23,7 +24,8 @@ use crate::{
     },
     utils::{
         filename::{
-            normalize_brackets, sanitize_filename, split_name_ext, strip_conflict_suffix,
+            normalize_brackets, resolve_conflict_with_reserved, sanitize_filename, split_name_ext,
+            strip_conflict_suffix,
         },
         path::{to_extended_length_path, to_user_friendly_path},
     },
@@ -132,7 +134,7 @@ pub fn preview_mod_rename(
         match seed {
             PreviewSeed::Pending(item) => {
                 let (final_target, conflict) =
-                    resolve_conflict_for_batch(item.target_path, &mut reserved_targets);
+                    resolve_conflict_with_reserved(item.target_path, &mut reserved_targets);
                 result.push(ModRenamePreviewItem {
                     old_path: item.old_path,
                     new_path: to_user_friendly_path(&final_target),
@@ -211,49 +213,6 @@ fn preview_seed_old_path(seed: &PreviewSeed) -> &str {
     }
 }
 
-/// 同时考虑磁盘现状与本批次已保留目标名，为后续条目分配稳定的 ` (N)` 后缀。
-fn resolve_conflict_for_batch(
-    target: PathBuf,
-    reserved_targets: &mut HashSet<String>,
-) -> (PathBuf, bool) {
-    if !path_exists_or_reserved(&target, reserved_targets) {
-        reserve_target(&target, reserved_targets);
-        return (target, false);
-    }
-
-    let parent = target
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf();
-    let file_name = target.file_name().unwrap().to_string_lossy().to_string();
-    let (stem, ext) = split_name_ext(&file_name);
-    let ext = ext.unwrap_or_default();
-
-    let mut i = 1usize;
-    loop {
-        let candidate = parent.join(format!("{stem} ({i}){ext}"));
-        if !path_exists_or_reserved(&candidate, reserved_targets) {
-            reserve_target(&candidate, reserved_targets);
-            return (candidate, true);
-        }
-        i += 1;
-    }
-}
-
-fn path_exists_or_reserved(path: &Path, reserved_targets: &HashSet<String>) -> bool {
-    reserved_targets.contains(&batch_target_key(path)) || to_extended_length_path(path).exists()
-}
-
-fn reserve_target(path: &Path, reserved_targets: &mut HashSet<String>) {
-    reserved_targets.insert(batch_target_key(path));
-}
-
-fn batch_target_key(path: &Path) -> String {
-    to_extended_length_path(path)
-        .to_string_lossy()
-        .to_lowercase()
-}
-
 /// 应用重命名：按预览结果把文件批量 rename，并持久化为 `mod_op` 记录。
 pub fn apply_mod_rename(
     db_path: &Path,
@@ -284,76 +243,18 @@ pub fn apply_mod_rename(
     }
 
     let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+    let record_id = Uuid::new_v4().to_string();
 
+    // Mod 重命名是纯反向 rename，不参与"启用 Mod 操作回滚"开关，永远可撤回。
     op_pipeline::persist_apply_rename_pairs(
         db_path,
         MOD_OP_TABLES,
+        &record_id,
+        true,
         mod_op_kind::RENAME,
         name,
         paths,
         pairs,
         false,
     )
-}
-
-#[cfg(test)]
-mod tests {
-    use std::{
-        collections::HashSet,
-        fs,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    use super::resolve_conflict_for_batch;
-
-    fn temp_dir_path(prefix: &str) -> std::path::PathBuf {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!("kk-file-tool-{prefix}-{nonce}"))
-    }
-
-    #[test]
-    fn batch_conflicts_append_incrementing_suffixes() {
-        let dir = temp_dir_path("mod-rename-batch");
-        fs::create_dir_all(&dir).unwrap();
-
-        let mut reserved = HashSet::new();
-        let (first, first_conflict) =
-            resolve_conflict_for_batch(dir.join("same.zipmod"), &mut reserved);
-        let (second, second_conflict) =
-            resolve_conflict_for_batch(dir.join("same.zipmod"), &mut reserved);
-        let (third, third_conflict) =
-            resolve_conflict_for_batch(dir.join("same.zipmod"), &mut reserved);
-
-        assert_eq!(first.file_name().unwrap().to_string_lossy(), "same.zipmod");
-        assert!(!first_conflict);
-        assert_eq!(second.file_name().unwrap().to_string_lossy(), "same (1).zipmod");
-        assert!(second_conflict);
-        assert_eq!(third.file_name().unwrap().to_string_lossy(), "same (2).zipmod");
-        assert!(third_conflict);
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn batch_conflicts_skip_existing_files_before_reserved_names() {
-        let dir = temp_dir_path("mod-rename-existing");
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("same.zipmod"), b"1").unwrap();
-        fs::write(dir.join("same (1).zipmod"), b"2").unwrap();
-
-        let mut reserved = HashSet::new();
-        let (resolved, conflict) =
-            resolve_conflict_for_batch(dir.join("same.zipmod"), &mut reserved);
-
-        assert!(conflict);
-        assert_eq!(
-            resolved.file_name().unwrap().to_string_lossy(),
-            "same (2).zipmod"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
 }

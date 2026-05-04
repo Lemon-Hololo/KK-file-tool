@@ -19,6 +19,7 @@
 //! `check_rollback` / `rollback` 均构造临时 rayon 线程池执行并行操作，
 //! 避免影响全局默认池。
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use chrono::Local;
@@ -33,7 +34,10 @@ use crate::{
     db::{op_record_repo, settings_repo},
     error::{AppError, AppResult},
     models::{ModOpApplyItem, ModOpApplyResponse, ModOpRollbackCheck, ModOpRollbackResponse},
-    utils::path::to_extended_length_path,
+    utils::{
+        filename::resolve_conflict_with_reserved,
+        path::{to_extended_length_path, to_user_friendly_path},
+    },
 };
 
 pub use crate::db::op_record_repo::OpRecordTables;
@@ -102,8 +106,45 @@ fn rayon_pool(n: usize) -> AppResult<ThreadPool> {
 /// `(old_path, new_path, 是否成功, 错误消息)`。
 pub type MoveOutcome = (String, String, bool, Option<String>);
 
-/// 并行执行 `std::fs::rename`。`create_parent = true` 时在 rename 前确保
-/// 目标父目录存在（用于"归类"类操作）。
+/// rename，跨卷失败时退化为 copy + remove。
+///
+/// `std::fs::rename` 跨卷会以 Windows 的 `ERROR_NOT_SAME_DEVICE`(17) /
+/// Linux 的 `EXDEV`(18) 失败。Mod 备份目录可能位于和源文件不同的磁盘
+/// （例如源在 D:\，备份目录配置在 C:\），需要 copy + remove 兜底。
+/// 同卷场景下走 rename 仍是常数时间，性能不受影响。
+pub fn rename_or_copy_delete(src: &Path, dst: &Path) -> Result<(), String> {
+    let src_ep = to_extended_length_path(src);
+    let dst_ep = to_extended_length_path(dst);
+
+    match std::fs::rename(&src_ep, &dst_ep) {
+        Ok(_) => Ok(()),
+        Err(e) if is_cross_device_error(&e) => {
+            // 拷贝成功后再删源；任何一步失败都需清理避免半成品。
+            std::fs::copy(&src_ep, &dst_ep).map_err(|e| format!("跨卷复制失败: {e}"))?;
+            if let Err(e) = std::fs::remove_file(&src_ep) {
+                let _ = std::fs::remove_file(&dst_ep);
+                return Err(format!("跨卷删除源文件失败: {e}"));
+            }
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg(windows)]
+fn is_cross_device_error(e: &std::io::Error) -> bool {
+    // Windows: ERROR_NOT_SAME_DEVICE = 17
+    e.raw_os_error() == Some(17)
+}
+
+#[cfg(not(windows))]
+fn is_cross_device_error(e: &std::io::Error) -> bool {
+    // Unix: EXDEV = 18
+    e.raw_os_error() == Some(18)
+}
+
+/// 并行执行 rename（跨卷自动退化为 copy + remove）。
+/// `create_parent = true` 时在 rename 前确保目标父目录存在（用于"归类"类操作）。
 pub fn parallel_move(
     pairs: Vec<(String, String)>,
     create_parent: bool,
@@ -128,12 +169,9 @@ pub fn parallel_move(
                     }
                 }
 
-                match std::fs::rename(
-                    to_extended_length_path(&old_p),
-                    to_extended_length_path(&new_p),
-                ) {
+                match rename_or_copy_delete(&old_p, &new_p) {
                     Ok(_) => (old_path, new_path, true, None),
-                    Err(e) => (old_path, new_path, false, Some(e.to_string())),
+                    Err(e) => (old_path, new_path, false, Some(e)),
                 }
             })
             .collect()
@@ -173,6 +211,10 @@ where
 /// `kind` 字段在 Suffix 场景下由调用方填入空字符串即可，前端模型已忽略）。
 ///
 /// # 参数
+/// - `record_id`：业务侧预生成（Mod 备份型操作需要在 apply 前用 record_id
+///   构造备份子目录路径）。其它业务可用 `Uuid::new_v4().to_string()`。
+/// - `rollback_enabled`：写入记录主表的回滚开关；Mod 备份型操作根据用户设置
+///   传入，其它业务一律 `true`。
 /// - `extra_value`：`tables.extra_summary_column` 对应列要写入的值；
 ///   如 Mod 工具传 `"rename"` / `"organize"`，Suffix 传 `.txt` 这样的后缀串。
 /// - `create_parent`：rename 前是否自动创建目标父目录；Suffix 不需要，
@@ -180,6 +222,8 @@ where
 pub fn persist_apply_rename_pairs(
     db_path: &Path,
     tables: OpRecordTables,
+    record_id: &str,
+    rollback_enabled: bool,
     extra_value: &str,
     record_name: String,
     source_paths: &[String],
@@ -191,6 +235,8 @@ pub fn persist_apply_rename_pairs(
     persist_apply_results(
         db_path,
         tables,
+        record_id,
+        rollback_enabled,
         extra_value,
         record_name,
         source_paths,
@@ -202,6 +248,8 @@ pub fn persist_apply_rename_pairs(
 pub fn persist_apply_with_executor<F>(
     db_path: &Path,
     tables: OpRecordTables,
+    record_id: &str,
+    rollback_enabled: bool,
     extra_value: &str,
     record_name: String,
     source_paths: &[String],
@@ -216,6 +264,8 @@ where
     persist_apply_results(
         db_path,
         tables,
+        record_id,
+        rollback_enabled,
         extra_value,
         record_name,
         source_paths,
@@ -234,6 +284,8 @@ where
 pub fn persist_apply_results(
     db_path: &Path,
     tables: OpRecordTables,
+    record_id: &str,
+    rollback_enabled: bool,
     extra_value: &str,
     record_name: String,
     source_paths: &[String],
@@ -242,11 +294,13 @@ pub fn persist_apply_results(
     let created_at = Local::now().timestamp();
     let source_paths_json =
         serde_json::to_string(source_paths).map_err(|e| AppError::Internal(e.to_string()))?;
-    let record_id = op_record_repo::create_record(
+    op_record_repo::create_record(
         db_path,
         tables,
+        record_id,
         &record_name,
         extra_value,
+        rollback_enabled,
         &source_paths_json,
         created_at,
     )?;
@@ -255,7 +309,7 @@ pub fn persist_apply_results(
     let item_ids = op_record_repo::batch_insert_items(
         db_path,
         tables,
-        &record_id,
+        record_id,
         &results
             .iter()
             .map(|(o, n, ok, msg)| (o.as_str(), n.as_str(), *ok, msg.as_deref()))
@@ -287,9 +341,10 @@ pub fn persist_apply_results(
     }
 
     Ok(ModOpApplyResponse {
-        record_id,
+        record_id: record_id.to_string(),
         record_name,
         kind: extra_value.to_string(),
+        rollback_enabled,
         total: items.len(),
         success,
         failed,
@@ -355,6 +410,17 @@ pub fn check_rollback_with_detail(
 ///
 /// 同步更新每条 item 的 `rollback_success / rollback_error`，并根据整体
 /// 成功率设置记录的 `rollback_status`。
+///
+/// 若记录创建时 `rollback_enabled = false`（例如用户关闭了 Mod 工具的回滚开关），
+/// 直接返回 `AppError::InvalidInput`，后端拒绝执行。
+///
+/// # 冲突处理
+/// 当原路径上已经被新文件占用（用户在 apply 之后又往那里放了同名文件）时，
+/// 撤回不会覆盖该文件，而是把恢复目标加 ` (1)` / ` (2)` ... 后缀避让。决议过程
+/// 在并行 rename 之前**顺序**完成（见 `resolve_conflict_with_reserved`），避免两个
+/// rayon worker 同时撞上同一个目标各自分到 `(1)` 然后互相覆盖的 race。
+/// 冲突时仍记 `apply_success = true`，并把"已恢复到 X"写入 `rollback_error`
+/// 字段（该列在记录详情里既显示错误也显示备注）。
 pub fn rollback(
     db_path: &Path,
     tables: OpRecordTables,
@@ -364,6 +430,12 @@ pub fn rollback(
 ) -> AppResult<ModOpRollbackResponse> {
     // 一次查 detail，给 check_rollback 与 selected 逻辑共用，避免重复读库。
     let detail = op_record_repo::get_record_detail(db_path, tables, record_id)?;
+
+    if !detail.summary.rollback_enabled {
+        return Err(AppError::InvalidInput(
+            "该记录创建时未启用回滚，无法撤回".to_string(),
+        ));
+    }
 
     let selected: Vec<op_record_repo::OpRecordItem> = detail
         .items
@@ -386,34 +458,96 @@ pub fn rollback(
         )));
     }
 
+    // 阶段 1：顺序解析每条 item 的最终目标路径。`reserved` 避免并行时两个 worker
+    // 都看到 X 不存在 → 都解析为 X (1)，互相覆盖。new_path 缺失的项不参与
+    // reserved（也不会执行 rename）。
+    let mut reserved: HashSet<String> = HashSet::new();
+    let resolved: Vec<RollbackPlan> = selected
+        .into_iter()
+        .map(|item| {
+            let current = PathBuf::from(&item.new_path);
+            if item.new_path.is_empty() || !to_extended_length_path(&current).exists() {
+                return RollbackPlan {
+                    item,
+                    current,
+                    target: None,
+                    conflict: false,
+                };
+            }
+            let old = PathBuf::from(&item.old_path);
+            let (final_old, conflict) = resolve_conflict_with_reserved(old, &mut reserved);
+            RollbackPlan {
+                item,
+                current,
+                target: Some(final_old),
+                conflict,
+            }
+        })
+        .collect();
+
+    // 阶段 2：并行执行 rename。冲突预解析已经完成，这里只负责 IO。
     let pool = rayon_pool(resolve_thread_count(db_path))?;
-    let results: Vec<_> = pool.install(|| {
-        selected
+    let results: Vec<RollbackOutcome> = pool.install(|| {
+        resolved
             .into_par_iter()
-            .map(|item| {
-                let current = PathBuf::from(&item.new_path);
-                let old = PathBuf::from(&item.old_path);
+            .map(|plan| {
+                let RollbackPlan {
+                    item,
+                    current,
+                    target,
+                    conflict,
+                } = plan;
+                let Some(final_old) = target else {
+                    return RollbackOutcome {
+                        item,
+                        status: "skipped_missing",
+                        message: None,
+                        conflict: false,
+                    };
+                };
 
-                if !to_extended_length_path(&current).exists() {
-                    return (item, "skipped_missing", None::<String>);
-                }
-
-                // 回滚时也需要保证老的父目录存在（归类回滚时子目录已删除的可能性较低，
-                // 但 rename 场景老目录一定存在；统一处理更稳妥）
-                if let Some(parent) = old.parent() {
+                // 兜底建父目录（归类撤回时子目录可能已被外部清掉；同卷 rename
+                // 不需要这一步，但跨卷 copy 一定要）
+                if let Some(parent) = final_old.parent() {
                     if !to_extended_length_path(parent).exists() {
-                        if let Err(e) = std::fs::create_dir_all(to_extended_length_path(parent)) {
-                            return (item, "failed", Some(e.to_string()));
+                        if let Err(e) =
+                            std::fs::create_dir_all(to_extended_length_path(parent))
+                        {
+                            return RollbackOutcome {
+                                item,
+                                status: "failed",
+                                message: Some(e.to_string()),
+                                conflict: false,
+                            };
                         }
                     }
                 }
 
-                match std::fs::rename(
-                    to_extended_length_path(&current),
-                    to_extended_length_path(&old),
-                ) {
-                    Ok(_) => (item, "success", None),
-                    Err(e) => (item, "failed", Some(e.to_string())),
+                // 跨卷场景由 rename_or_copy_delete 兜底——例如用户把备份目录
+                // 配置在另一块盘，撤回时备份要从那盘拷回源盘。
+                match rename_or_copy_delete(&current, &final_old) {
+                    Ok(_) => {
+                        let message = if conflict {
+                            Some(format!(
+                                "目标已存在，已恢复到: {}",
+                                to_user_friendly_path(&final_old)
+                            ))
+                        } else {
+                            None
+                        };
+                        RollbackOutcome {
+                            item,
+                            status: "success",
+                            message,
+                            conflict,
+                        }
+                    }
+                    Err(e) => RollbackOutcome {
+                        item,
+                        status: "failed",
+                        message: Some(e),
+                        conflict: false,
+                    },
                 }
             })
             .collect()
@@ -425,39 +559,41 @@ pub fn rollback(
     let mut skipped_missing = 0usize;
     let mut items = Vec::with_capacity(results.len());
 
+    // rollback_error 列同时承载错误与"已恢复到 X"备注；前端"撤回错误"列按
+    // 字符串原样展示，不再额外区分。
     let updates: Vec<(i64, bool, Option<&str>)> = results
         .iter()
-        .map(|(item, status, err)| {
-            let (ok, err_msg) = match *status {
-                "success" => (true, None),
+        .map(|outcome| {
+            let (ok, msg) = match outcome.status {
+                "success" => (true, outcome.message.as_deref()),
                 "skipped_missing" => (false, Some("SKIPPED_NOT_FOUND")),
-                _ => (false, err.as_deref()),
+                _ => (false, outcome.message.as_deref()),
             };
-            (item.item_id, ok, err_msg)
+            (outcome.item.item_id, ok, msg)
         })
         .collect();
 
     op_record_repo::batch_update_rollback_results(db_path, tables, &updates, now)?;
 
-    for (item, status, err) in results {
-        match status {
+    for outcome in results {
+        match outcome.status {
             "success" => success += 1,
             "skipped_missing" => skipped_missing += 1,
             _ => failed += 1,
         }
         items.push(ModOpApplyItem {
-            item_id: item.item_id,
-            old_path: item.old_path,
-            new_path: item.new_path,
-            status: if status == "success" {
+            item_id: outcome.item.item_id,
+            old_path: outcome.item.old_path,
+            new_path: outcome.item.new_path,
+            status: if outcome.status == "success" {
                 "success".into()
             } else {
                 "failed".into()
             },
-            message: match status {
+            message: match outcome.status {
                 "skipped_missing" => Some("SKIPPED_NOT_FOUND".into()),
-                "failed" => err,
-                _ => None,
+                "success" => outcome.message,
+                _ => outcome.message,
             },
         });
     }
@@ -479,4 +615,25 @@ pub fn rollback(
         skipped_missing,
         items,
     })
+}
+
+/// 顺序解析阶段产出的每条 item 计划：阶段 2 用它直接执行。
+struct RollbackPlan {
+    item: op_record_repo::OpRecordItem,
+    /// 备份/搬走的文件当前位置（item.new_path）。
+    current: PathBuf,
+    /// 解析后的最终落点；`None` 表示 `current` 缺失或 new_path 为空，本条会被
+    /// 标记为 `skipped_missing` 而不参与 rename。
+    target: Option<PathBuf>,
+    /// 是否因目标已被占用而做了 ` (N)` 后缀。
+    conflict: bool,
+}
+
+/// 阶段 2 并行执行后的结果，整理给后续写库 / 构造响应使用。
+struct RollbackOutcome {
+    item: op_record_repo::OpRecordItem,
+    status: &'static str,
+    message: Option<String>,
+    #[allow(dead_code)]
+    conflict: bool,
 }

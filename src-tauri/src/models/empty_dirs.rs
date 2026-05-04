@@ -32,6 +32,8 @@ pub struct EmptyDirApplyResponse {
     pub record_id: String,
     pub record_name: String,
     pub kind: String,
+    /// 空文件夹清理一律 `true`；保留字段以与通用 DTO 对齐。
+    pub rollback_enabled: bool,
     pub total: usize,
     pub success: usize,
     pub failed: usize,
@@ -50,6 +52,8 @@ pub struct EmptyDirRecordSummary {
     pub success_items: usize,
     /// `"applied"` / `"partially_rolled_back"` / `"rolled_back"`。
     pub rollback_status: String,
+    /// 空文件夹清理一律 `true`；保留字段以与通用 DTO 对齐。
+    pub rollback_enabled: bool,
 }
 
 /// 详情中的 item。

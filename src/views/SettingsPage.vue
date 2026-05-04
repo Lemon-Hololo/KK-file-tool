@@ -32,6 +32,7 @@ const sections: SectionItem[] = [
   { id: "performance", label: "性能" },
   { id: "preview", label: "预览" },
   { id: "tools", label: "工具默认值" },
+  { id: "pixiv", label: "Pixiv 标签" },
   { id: "database", label: "数据库管理" }
 ];
 
@@ -112,19 +113,45 @@ async function pickDbFolder() {
   }
 }
 
-async function saveDbPath() {
+/**
+ * 弹出系统目录选择框，把选中的目录写到移动目标目录设置。
+ *
+ * 留空 → 后端去重移动会兜底到 `<exe_dir>/temp_moved_files`。
+ */
+async function pickMoveTargetFolder() {
   try {
-    await configStore.setCustomDbPath(customDbPath.value);
-    ElMessage.success("数据库路径已保存，重启应用后生效");
-  } catch (e: any) {
-    ElMessage.error(e?.toString() ?? "保存失败");
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "选择移动目标目录"
+    });
+    if (typeof selected === "string" && selected) {
+      configStore.settings.moveTargetPath = selected;
+    }
+  } catch (e) {
+    ElMessage.error(`打开目录选择失败：${String(e)}`);
   }
 }
 
-async function clearDbPath() {
-  customDbPath.value = "";
-  await configStore.setCustomDbPath("");
-  ElMessage.success("已恢复默认数据库路径，重启应用后生效");
+/**
+ * 弹出系统目录选择框，把选中的目录写到 Mod 备份目录设置。
+ *
+ * 留空 → 后端 `services::mod_tools::backup::resolve_backup_root` 会兜底到
+ * `<exe_dir>/mod-backups`。每条记录会自动落入 `<root>/<record_id>/`。
+ */
+async function pickModBackupFolder() {
+  try {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: "选择 Mod 备份目录"
+    });
+    if (typeof selected === "string" && selected) {
+      configStore.settings.modBackupDir = selected;
+    }
+  } catch (e) {
+    ElMessage.error(`打开目录选择失败：${String(e)}`);
+  }
 }
 
 async function handleDeleteDb() {
@@ -159,6 +186,87 @@ function ioMultiplierLabel(val: number) {
   return `×${val}`;
 }
 
+// ---------- 排除 tag：气泡输入 ----------
+//
+// 用 el-tag chip 列 + 一个原生 input 模拟"输入 tag 名,以 ; 分隔多个,自动变成气泡"。
+// 不用 el-select multiple 的原因:
+// 1) el-select 用回车提交,没法做"输入 ; 自动拆分",需要用户每次回车一次,体验差;
+// 2) 半角 ;、全角 ;、IME 候选 ; 三种分隔符都要支持,el-select 没暴露能拦截输入的 hook;
+// 3) 气泡样式自己控更稳,不会被 EP 升级折腾。
+const excludedTagBuffer = ref("");
+const excludedInputRef = ref<HTMLInputElement | null>(null);
+const excludedSeparators = /[;；]/;
+
+function getExcludedTags(): string[] {
+  return configStore.settings.pixivExcludedTags ?? [];
+}
+
+/** 设置时去重 + trim,保证 chip 列里没有重复或空白项。 */
+function setExcludedTags(tags: string[]) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of tags) {
+    const s = t.trim();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  configStore.settings.pixivExcludedTags = out;
+}
+
+function removeExcludedTag(tag: string) {
+  setExcludedTags(getExcludedTags().filter((t) => t !== tag));
+}
+
+/**
+ * 输入框 input 事件:实时检查是否含有 ; / ；。
+ * 含分隔符时,把分隔符前的所有部分作为 chip 提交,最后一段(可能在打字)留在 buffer 里。
+ * 这样用户输入 "tag1;tag2;tag3" 就会得到三个 chip,buffer 清空;
+ * 输入 "tag1;tag2" 后停笔,会得到 chip "tag1",buffer 留 "tag2"——再回车 / 失焦才提交最后这个。
+ */
+function onExcludedInput(e: Event) {
+  const value = (e.target as HTMLInputElement).value;
+  excludedTagBuffer.value = value;
+  if (!excludedSeparators.test(value)) return;
+  const parts = value.split(excludedSeparators);
+  const toAdd = parts.slice(0, -1);
+  const remaining = parts[parts.length - 1] ?? "";
+  setExcludedTags([...getExcludedTags(), ...toAdd]);
+  excludedTagBuffer.value = remaining;
+}
+
+/** 回车 / 失焦时把 buffer 整体提交。仍然走 ; 拆分,处理"用户在最后多打一个 ;"的情况。 */
+function commitExcludedInput() {
+  const value = excludedTagBuffer.value;
+  if (!value.trim()) {
+    excludedTagBuffer.value = "";
+    return;
+  }
+  const parts = value.split(excludedSeparators).map((s) => s.trim()).filter(Boolean);
+  if (parts.length === 0) {
+    excludedTagBuffer.value = "";
+    return;
+  }
+  setExcludedTags([...getExcludedTags(), ...parts]);
+  excludedTagBuffer.value = "";
+}
+
+/** Backspace 在空 buffer 上时,删掉最后一个 chip(模仿 el-select multiple 的行为)。 */
+function onExcludedKeydown(e: KeyboardEvent) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    commitExcludedInput();
+    return;
+  }
+  if (e.key === "Backspace" && !excludedTagBuffer.value) {
+    const tags = getExcludedTags();
+    if (tags.length > 0) {
+      e.preventDefault();
+      setExcludedTags(tags.slice(0, -1));
+    }
+  }
+}
+
 watchDebounced(
   () => JSON.stringify(configStore.settings),
   async () => {
@@ -172,6 +280,26 @@ watchDebounced(
     }
   },
   { debounce: 400, maxWait: 1500 }
+);
+
+// 自定义数据库路径走外部 JSON 配置（鸡生蛋，存不进 db 自身），
+// 与 app_settings 不同表，因此单独 debounce 自动保存。
+// 留空 → setCustomDbPath("") → external_config 删除自定义项回退到默认路径。
+// 重启后生效，所以这里只刷 dbPathInfo，不打扰用户的"已保存"提示。
+watchDebounced(
+  () => customDbPath.value,
+  async (next, prev) => {
+    if (prev === undefined) return; // 初始挂载时同步赋值，跳过首次触发
+    autoSaveState.value = "saving";
+    try {
+      await configStore.setCustomDbPath(next);
+      autoSaveState.value = "saved";
+    } catch (e: any) {
+      autoSaveState.value = "error";
+      ElMessage.error(e?.toString() ?? "数据库路径保存失败");
+    }
+  },
+  { debounce: 600, maxWait: 2000 }
 );
 </script>
 
@@ -214,11 +342,14 @@ watchDebounced(
 
               <div class="form-row">
                 <label class="label">移动目标目录</label>
-                <el-input
-                  v-model="configStore.settings.moveTargetPath"
-                  placeholder="为空使用程序目录/temp_moved_files"
-                  class="flex-input"
-                />
+                <div class="flex-input db-path-group">
+                  <el-input
+                    v-model="configStore.settings.moveTargetPath"
+                    placeholder="留空使用程序目录/temp_moved_files"
+                    clearable
+                  />
+                  <el-button :icon="Folder" @click="pickMoveTargetFolder">选择目录</el-button>
+                </div>
               </div>
 
               <div class="form-row">
@@ -370,6 +501,149 @@ watchDebounced(
                   <span class="hint-inline">仅对首次打开面板生效；之后以面板本地保存为准</span>
                 </div>
               </div>
+
+              <div class="form-row">
+                <label class="label">启用 Mod 操作回滚</label>
+                <div class="flex-input">
+                  <el-switch v-model="configStore.settings.modRollbackEnabled" />
+                  <span class="hint-inline">仅作用于"重复删除 / 不同版本删除 / 移除版本限制"。关闭后这三类不再创建备份，记录管理页的"撤回"按钮置灰。</span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">Mod 备份目录</label>
+                <div class="flex-input db-path-group">
+                  <el-input
+                    v-model="configStore.settings.modBackupDir"
+                    placeholder="留空使用程序目录/mod-backups"
+                    clearable
+                    :disabled="!configStore.settings.modRollbackEnabled"
+                  />
+                  <el-button
+                    :icon="Folder"
+                    :disabled="!configStore.settings.modRollbackEnabled"
+                    @click="pickModBackupFolder"
+                  >
+                    选择目录
+                  </el-button>
+                </div>
+              </div>
+            </div>
+          </Panel>
+
+          <!-- Pixiv 标签 -->
+          <Panel data-section="pixiv" title="Pixiv 标签" :padded="false">
+            <div class="form">
+              <div class="form-row">
+                <label class="label">获取标签接口地址</label>
+                <div class="flex-input">
+                  <el-input
+                    v-model="configStore.settings.pixivTagApiBase"
+                    placeholder="https://www.pixiv.net/ajax/illust/"
+                  />
+                  <span class="hint">最终请求 = 接口地址 + PID。建议保留默认值。</span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">使用英文译名显示</label>
+                <div class="flex-input">
+                  <el-switch v-model="configStore.settings.pixivUseTranslation" />
+                  <span class="hint-inline">
+                    Pixiv 响应里 `translation.en` 有值的 tag 会用译名替代原 tag 显示，
+                    点击移动也按译名建子目录；缺译名的 tag 自动回落原 tag。
+                    任务面板顶部"使用英文译名"开关与本设置同步。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">每分钟最大请求数</label>
+                <div class="flex-input">
+                  <el-input-number
+                    v-model="configStore.settings.pixivRateLimitPerMinute"
+                    :min="1"
+                    :max="600"
+                    :step="10"
+                    controls-position="right"
+                  />
+                  <span class="hint-inline">
+                    防止被 Pixiv 拉黑：所有并发 worker / 重试 共享一条节流队列，
+                    整体速率被锁在 `值/60` 次/秒。默认 60（每秒 1 条）已经相当保守；
+                    游客身份下不建议高于 120，登录态 / 代理稳定时可上调到 300。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">排除的 tag</label>
+                <div class="flex-input">
+                  <!--
+                    自定义气泡输入:点击容器聚焦输入框,输入 ; / ; 自动拆成 chip;
+                    Backspace 在空输入框上删最后一个;Enter / 失焦提交剩余 buffer。
+                  -->
+                  <div
+                    class="chip-input"
+                    @click="excludedInputRef?.focus()"
+                  >
+                    <el-tag
+                      v-for="tag in getExcludedTags()"
+                      :key="tag"
+                      closable
+                      :disable-transitions="true"
+                      size="small"
+                      @close="removeExcludedTag(tag)"
+                    >
+                      {{ tag }}
+                    </el-tag>
+                    <input
+                      ref="excludedInputRef"
+                      :value="excludedTagBuffer"
+                      class="chip-input-field"
+                      :placeholder="
+                        getExcludedTags().length === 0
+                          ? '输入 tag 名,多个用 ; 分隔;回车 / 失焦提交最后一个'
+                          : ''
+                      "
+                      @input="onExcludedInput"
+                      @keydown="onExcludedKeydown"
+                      @blur="commitExcludedInput"
+                    />
+                  </div>
+                  <span class="hint">
+                    输入 tag 名,多个之间用半角 `;` 或全角 `；` 分隔,会自动变成气泡。
+                    点 chip 上的 × 删除,光标在最末位置按 Backspace 也能删掉最后一个。
+                    匹配的是当前面板上"显示出来"的字符串——开了译名开关就按译名匹配,
+                    关了就按原 tag 匹配。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">代理</label>
+                <div class="flex-input">
+                  <el-input
+                    v-model="configStore.settings.pixivProxy"
+                    placeholder="如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080；留空读环境变量"
+                    clearable
+                  />
+                  <span class="hint">中国大陆访问 Pixiv 通常需要配代理；支持 HTTP / HTTPS / SOCKS5。</span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">Pixiv Cookie</label>
+                <div class="flex-input">
+                  <el-input
+                    v-model="configStore.settings.pixivCookie"
+                    type="textarea"
+                    :rows="3"
+                    placeholder="完整 Cookie 字符串（如 PHPSESSID=...; ...）；留空使用游客身份，部分 tag 取不到"
+                    clearable
+                  />
+                  <span class="hint">仅在本机数据库与配置中保存，不会上传。</span>
+                </div>
+              </div>
             </div>
           </Panel>
 
@@ -387,15 +661,16 @@ watchDebounced(
 
               <div class="form-row">
                 <label class="label">自定义数据库路径</label>
-                <div class="flex-input db-path-group">
-                  <el-input
-                    v-model="customDbPath"
-                    placeholder="留空使用默认路径"
-                    clearable
-                  />
-                  <el-button :icon="Folder" @click="pickDbFolder">选择目录</el-button>
-                  <el-button type="primary" @click="saveDbPath">保存</el-button>
-                  <el-button @click="clearDbPath">恢复默认</el-button>
+                <div class="flex-input">
+                  <div class="db-path-group">
+                    <el-input
+                      v-model="customDbPath"
+                      placeholder="留空使用默认目录"
+                      clearable
+                    />
+                    <el-button :icon="Folder" @click="pickDbFolder">选择目录</el-button>
+                  </div>
+                  <div class="hint">修改后重启应用生效</div>
                 </div>
               </div>
 
@@ -523,6 +798,7 @@ watchDebounced(
 }
 
 .db-path-group {
+  display: flex;
   flex-direction: row;
   align-items: center;
   gap: 8px;
@@ -541,6 +817,42 @@ watchDebounced(
   font-size: var(--ff-font-xs);
   color: var(--ff-text-muted);
   margin-left: 10px;
+}
+
+/* ---- 排除 tag 的气泡输入容器 ---- */
+.chip-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-height: 32px;
+  padding: 4px 8px;
+  border: 1px solid var(--el-border-color);
+  border-radius: var(--el-border-radius-base);
+  background: var(--el-fill-color-blank);
+  cursor: text;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.chip-input:hover {
+  border-color: var(--el-border-color-hover);
+}
+.chip-input:focus-within {
+  border-color: var(--el-color-primary);
+  box-shadow: 0 0 0 2px var(--el-color-primary-light-9, rgba(64, 158, 255, 0.1));
+}
+.chip-input-field {
+  flex: 1 1 120px;
+  min-width: 80px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ff-text-primary, var(--el-text-color-primary));
+  font: inherit;
+  font-size: var(--el-font-size-base);
+  padding: 2px 0;
+}
+.chip-input-field::placeholder {
+  color: var(--el-text-color-placeholder);
 }
 
 @media (max-width: 800px) {

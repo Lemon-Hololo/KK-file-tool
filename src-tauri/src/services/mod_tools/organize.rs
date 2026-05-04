@@ -1,8 +1,9 @@
 //! FileOrganizer: 非递归扫描目录，按文件名首个 `[...]` 括号内容建子目录并移入。
 
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use chrono::Local;
+use uuid::Uuid;
 
 use crate::{
     constants::mod_op_kind,
@@ -10,17 +11,23 @@ use crate::{
     models::{ModOpApplyResponse, ModOrganizePreviewItem},
     services::{logging::TaskLogContext, mod_tools::MOD_OP_TABLES, op_pipeline},
     utils::{
-        filename::{extract_bracket, resolve_conflict},
+        filename::{extract_bracket, resolve_conflict_with_reserved},
         path::{to_extended_length_path, to_user_friendly_path},
     },
 };
 
 /// 对 `paths` 下每个目录做一次（非递归）扫描；返回每个文件的归类预览。
+///
+/// 跨多个源目录处理时，可能出现两个 `[X]foo.zipmod` 应该归类到同一个 `[X]/`
+/// 子目录的情况——`reserved` 集合保证两者得到不同的最终路径（第二个会被自动
+/// 标成 `[X]/foo (1).zipmod`），而不是 preview 里都标成"无冲突"、apply 时
+/// 互相覆盖。
 pub fn preview_mod_organize(
     paths: &[String],
     log: Option<TaskLogContext>,
 ) -> AppResult<Vec<ModOrganizePreviewItem>> {
     let mut result = vec![];
+    let mut reserved: HashSet<String> = HashSet::new();
 
     for root in paths {
         let dir = Path::new(root);
@@ -55,7 +62,7 @@ pub fn preview_mod_organize(
                 continue;
             }
 
-            let (final_target, conflict) = resolve_conflict(target);
+            let (final_target, conflict) = resolve_conflict_with_reserved(target, &mut reserved);
 
             result.push(ModOrganizePreviewItem {
                 old_path: to_user_friendly_path(&file_path),
@@ -96,10 +103,14 @@ pub fn apply_mod_organize(
     }
 
     let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+    let record_id = Uuid::new_v4().to_string();
 
+    // Mod 归类是纯反向 rename，不参与"启用 Mod 操作回滚"开关，永远可撤回。
     op_pipeline::persist_apply_rename_pairs(
         db_path,
         MOD_OP_TABLES,
+        &record_id,
+        true,
         mod_op_kind::ORGANIZE,
         name,
         paths,

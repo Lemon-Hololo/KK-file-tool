@@ -232,7 +232,11 @@ async function renameModRecord(row: any) {
   ElMessage.success("重命名成功");
 }
 
-async function rollbackModRecord(recordId: string) {
+async function rollbackModRecord(recordId: string, rollbackEnabled = true) {
+  if (!rollbackEnabled) {
+    ElMessage.warning("此记录创建时未启用回滚，无法撤回");
+    return;
+  }
   const check = await modToolsStore.checkRollback(recordId);
   if (check.missingPaths.length) {
     await ElMessageBox.confirm(
@@ -584,7 +588,15 @@ const modListColumns: VirtualColumn[] = [
           <template #modActions="{ row }">
             <el-button size="small" @click="openModDetail(row.recordId)">详情</el-button>
             <el-button size="small" @click="renameModRecord(row)">重命名</el-button>
-            <el-button size="small" type="warning" @click="rollbackModRecord(row.recordId)">撤回</el-button>
+            <el-button
+              size="small"
+              type="warning"
+              :disabled="!row.rollbackEnabled"
+              :title="row.rollbackEnabled ? '' : '此记录创建时未启用回滚'"
+              @click="rollbackModRecord(row.recordId, row.rollbackEnabled)"
+            >
+              撤回
+            </el-button>
           </template>
         </VirtualTable>
 

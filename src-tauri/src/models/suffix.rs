@@ -34,6 +34,8 @@ pub struct SuffixApplyItem {
 pub struct SuffixApplyResponse {
     pub record_id: String,
     pub record_name: String,
+    /// 后缀业务一律 `true`（不参与 Mod 工具回滚开关）；保留字段以与通用 DTO 对齐。
+    pub rollback_enabled: bool,
     pub total: usize,
     pub success: usize,
     pub failed: usize,
@@ -51,6 +53,8 @@ pub struct SuffixRecordSummary {
     pub total_items: usize,
     pub success_items: usize,
     pub rollback_status: String,
+    /// 后缀业务一律 `true`；保留字段以与通用 DTO 对齐。
+    pub rollback_enabled: bool,
 }
 
 /// 详情中的 item。

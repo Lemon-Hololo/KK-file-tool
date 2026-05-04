@@ -118,6 +118,10 @@ async function rollbackLast() {
     ElMessage.warning("没有可撤回记录");
     return;
   }
+  if (store.duplicateApplyResult && !store.duplicateApplyResult.rollbackEnabled) {
+    ElMessage.warning("此记录创建时未启用回滚，无法撤回");
+    return;
+  }
   const check = await store.checkRollback(id);
   if (check.missingPaths.length) {
     await ElMessageBox.confirm(
@@ -159,7 +163,13 @@ watch(
         <el-button type="danger" :disabled="busy || !selectedFiles.length" @click="applyDelete">
           删除选中（{{ selectedFiles.length }}）
         </el-button>
-        <el-button type="warning" plain :disabled="busy || !store.duplicateApplyResult" @click="rollbackLast">
+        <el-button
+          type="warning"
+          plain
+          :disabled="busy || !store.duplicateApplyResult || !store.duplicateApplyResult.rollbackEnabled"
+          :title="store.duplicateApplyResult && !store.duplicateApplyResult.rollbackEnabled ? '此记录创建时未启用回滚' : ''"
+          @click="rollbackLast"
+        >
           撤回本次
         </el-button>
       </div>

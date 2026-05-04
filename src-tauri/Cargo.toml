@@ -42,5 +42,12 @@ rusqlite = { version = "0.38", features = ["bundled"] }
 
 zip = "8.1.0"
 image = "0.25.9"
-quick-xml = "0.36"
+quick-xml = "0.39"
 encoding_rs = "0.8"
+
+# Pixiv 标签整理：HTTP 客户端 + PID 正则匹配。
+# reqwest 0.13 把默认 TLS 后端从 native-tls 切到了 rustls，且把旧的 `rustls-tls`
+# 特性改名为 `rustls`（旧名只在 0.12 存在）。我们仍显式列出 `rustls` 防止
+# `default-features = false` 时被关掉。`socks` 让用户能配 SOCKS5 代理（如 Clash 1080）。
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "gzip", "json", "socks"] }
+regex = "1"
