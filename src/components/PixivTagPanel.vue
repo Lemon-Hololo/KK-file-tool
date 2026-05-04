@@ -6,11 +6,14 @@
  * 1. 用户在任务输入侧边栏添加图片目录；
  * 2. 在本面板顶部填输出目录、点"开始扫描"；
  * 3. 后端先同步扫出所有含 PID 的图片建出 pending 行，再启动长任务并发拉 tag；
- * 4. 行上的"标签"单元格里所有 tag 都渲染成气泡；点气泡 → 把图移动到 `<output>/<tag>/`；
+ * 4. 行上的"标签"单元格里所有 tag 都渲染成气泡；点气泡 → 把图移到 `<output>/<tag>/`；
  * 5. "已移动到"列显示该行最近一次被移到的 tag；当前所在 tag 的气泡会高亮 + 置灰。
  *
  * 设计选择（这版）：
- * - **不再每 tag 一列**：列数固定 5–6 个（"显示图片"开关再加一列），气泡平铺在单个 cell 里；
+ * - **同 PID 多行**：候选扫描出多张图共用同一 PID（作品 p0..pN）很常见。store 用
+ *   `_pidIndex: Map<string, number[]>` 把每个 PID 映射到所有索引，partial 一到达
+ *   就把结果应用到整组同 PID 行，每一张图都能看到打勾、都能独立点 chip 移动；
+ *   行级操作（移动 / 重试 / 译名切换）按 `absPath` 定位（PID 此时不再是单行主键）。
  * - **行高随内容自适应**：tag-list 用 `flex-wrap: wrap` 自动换行；VirtualTable 开启
  *   `autoRowHeight` 后每行高度由 cell 内容（即气泡墙 + 缩略图）实测决定，不再需要
  *   单元格内部滚动条，所有 tag 都能直接看到；
@@ -19,30 +22,36 @@
  * - **列自定义开**：传 `column-config-key="pixiv:tags"`，用户可隐藏列 / 调整顺序 /
  *   切换左固定，配置随 localStorage 持久化；
  * - **fit-width 开**：列总宽不大，让 tag 列吃掉剩余空间最舒服；
- * - **翻译开关**：与配置中心同步 `pixivUseTranslation`，开启后 chip 显示 `translation.en`、
- *   点击后图片也落在 `<output>/<en 译名>/`；缺译名的 tag 自然回落原 tag。
- *   每行 chip 的展示由 panel 级 `tagsByPid` ref 维护，`watchEffect` 监听
- *   `pixivUseTranslation` / `pixivExcludedTags` / `store.rows`（含每行的
- *   `tags + translations`），任一变更立刻重建整张 Map —— `watchEffect` 是
- *   eager 的，规避了 `computed` 在 Pinia store 嵌套对象 + Map 输出场景下偶发
- *   不重算的灰区。
+ * - **全局译名开关 + 行级覆盖**：与配置中心同步 `pixivUseTranslation` 是默认值，
+ *   每行右侧"译名"列暴露一个 segmented 控件（`global` / `translated` / `original`）
+ *   可对该行单独覆盖。每行 chip 的展示走 **render-time 函数 `displayTagsForRow`**：
+ *   每次模板渲染时同步访问 `pixivUseTranslation` / `pixivLocalTagTranslations` /
+ *   `row.tags` / `row.translations` / `row.useTranslationOverride`，依赖直接落在组件 render effect 上，依赖变化
+ *   一定触发重渲染——绕过中间 ref / computed 任何潜在的缓存 quirks（之前用
+ *   `watchEffect + ref` 时遇到过翻译开关切了 chip 不刷新的灰区）。VirtualTable
+ *   的 v-for 只对可见行执行，per-row 计算在屏内十几行上跑，比"全表 watchEffect
+ *   重算 + 整体替换 ref"更省；
+ * - **节流刷新**：partial 进入 store 缓冲区后按 `pixivPartialFlushIntervalMs` 配置
+ *   决定立刻 commit（默认 0）还是按间隔批量 commit。50K 张图配 500ms 节流明显
+ *   降低 UI 抖动；
+ * - **后端日志**：每条 PID 完成（成功 / 失败）后端都会发一行 task_log，配合日志
+ *   面板能看到具体哪个 ID 出错；前端"重试失败"按钮一键串行重试所有 error 行。
  */
-import { computed, onMounted, ref, watch, watchEffect } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useStorage } from "@vueuse/core";
 import { ElMessage } from "element-plus";
 import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { Folder } from "@element-plus/icons-vue";
+import { Folder, RefreshRight } from "@element-plus/icons-vue";
 
 import { usePixivTagStore } from "../stores/pixivTag";
 import { useConfigStore } from "../stores/config";
-import { revealInExplorer } from "../services/task";
 import { stripWindowsExtendedPrefix } from "../utils/path";
 import { DEFAULT_EXTREME_ROW_THRESHOLD, EXTREME_OVERSCAN, NORMAL_OVERSCAN } from "../constants/task";
-import type { PixivImageState } from "../types/pixivTag";
+import type { PixivImageState, PixivTranslationOverride } from "../types/pixivTag";
 import type { VirtualColumn } from "../types/virtualTable";
 import Panel from "./common/Panel.vue";
-import PreviewPanel from "./PreviewPanel.vue";
+import PathPreviewLink from "./PathPreviewLink.vue";
 import VirtualTable from "./common/VirtualTable.vue";
 
 const props = defineProps<{
@@ -54,6 +63,7 @@ const store = usePixivTagStore();
 const configStore = useConfigStore();
 
 const moving = ref(false);
+const retryingAll = ref(false);
 
 /**
  * 是否在表里显示图片缩略图列。开启后会：
@@ -65,52 +75,77 @@ const moving = ref(false);
 const showImageColumn = useStorage<boolean>("pixivTag:showImage", false);
 
 /**
- * `pid → 该行该展示的 tag 列表（已剔除排除项 + 字典序）`。
+ * 计算单行 chip 列展示数据：`[{ original, display }]`。
  *
- * 用 `watchEffect + ref` 而不是 `computed`，**专门为了让"翻译开关切换"立刻见到效果**。
+ * 这里**不用 panel 级 computed / watchEffect**，而是改成 **render-time 函数**。
+ * 之前用 `watchEffect + ref` 写过两版，都遇到过"翻译开关切了 chip 不刷新"的现象，
+ * 怀疑根因是 Pinia 的嵌套 reactive proxy + Map 输出 + partial 多次写入下，
+ * effect 的依赖图在某个时间点漏掉了 row.translations 的依赖（lazy 缓存命中
+ * 旧值不重算）。
  *
- * 之前是 `computed(() => { ... })`，理论上 Vue 3 的依赖追踪能在 `pixivUseTranslation`
- * 变化时重算。但实际遇到一个 bug：当切换开关时 chip 文本不刷新（仍显示原 tag）。
- * 怀疑是 `for (const row of store.rows)` 嵌套读 `row.translations[t]` 时，循环里
- * 的 `if (useT) { trans[t] ... }` 在 `useT = false` 那次执行没建立对 `trans[t]`
- * 的追踪，开关切到 true 时只重算一次然后回到稳态——Vue Reactive Proxy 在
- * Pinia store + 嵌套对象 + Map 输出的组合下偶尔不重算。
+ * **render-time 函数的好处**：每次组件渲染（v-for / slot 求值）时都会**同步**
+ * 调用本函数，访问 `configStore.settings.pixivUseTranslation` /
+ * `configStore.settings.pixivLocalTagTranslations` / `row.tags` /
+ * `row.translations` / `row.useTranslationOverride` 都直接发生在组件 render
+ * effect 的栈上，依赖一定建立、一定能在依赖变化时触发组件重渲染——绕过中间
+ * 任何 ref / computed 的缓存层。
  *
- * `watchEffect + ref` 的好处：watchEffect 是 eager 的，每次依赖变化都立刻执行，
- * 不依赖 computed 的"被消费时才重算"的 lazy 语义；ref 整体替换让模板使用
- * `tagsByPid.value` 的依赖追踪非常明确（只看 ref 本身，不深挖里面 Map）。
+ * 性能：VirtualTable 只对**可见行**调用 v-for 槽，所以这里是 per-visible-row
+ * 计算，不是全表。50K 张图也只在屏幕里十几行上算，比 panel 级 watchEffect
+ * "全表重算然后 ref 整体替换"更省。
  *
- * 翻译规则：开关开 + `row.translations[原 tag]` 是非空字符串 → 用译名；
- * 否则一律用原 tag。匹配排除项用最终展示出的字符串（开关切换后行为对用户直觉一致）。
+ * 数据流（对照用户给的 json.json 示例）：
+ * - 后端从 `body.tags.tags[*]` 取 `tag`（原标签字符串），同时如果 `translation.en`
+ *   存在且非空，把 `(tag → en)` 加进 translations Map。最终 PIXIV partial item 携带
+ *   `tags: ["コイカツ", "キャラ配布(コイカツ)", ...]` 与 `translations: {"コイカツ":
+ *   "恋活", "キャラ配布(コイカツ)": "人物卡（恋活）", ...}`。
+ * - 前端 store 把它们写到 row.tags / row.translations。
+ * - 这里按 row.useTranslationOverride（行级覆盖）or 全局 `pixivUseTranslation`
+ *   决定 useT；useT = true 时先取本地翻译表 `pixivLocalTagTranslations[tag]`，
+ *   没有本地译名再取 Pixiv 响应里的 `translations[tag]`，都没有则回落原 tag。
+ * - 排除项始终先匹配原 tag，确保原 tag 被排除时切到译名也不会露出；同时兼容
+ *   匹配当前展示字符串，保留此前"按译名排除"的用法。
  */
-const tagsByPid = ref<Map<string, { original: string; display: string }[]>>(new Map());
+function displayTagsForRow(row: PixivImageState): { original: string; display: string }[] {
+  // 显式读所有依赖 —— 即便函数体后续没用到（useT = false 时不读 trans[t]），
+  // 这里"先读一下"也确保依赖建立。组件 render effect 的依赖追踪是按"实际访问"
+  // 来的，所以提前用变量接住每个 reactive 字段就不会出现"useT = false 那次没追踪"
+  // 的灰区。
+  const globalUseT = Boolean(configStore.settings.pixivUseTranslation);
+  const excluded = configStore.settings.pixivExcludedTags ?? [];
+  const ex = new Set(excluded);
+  const localTranslations = configStore.settings.pixivLocalTagTranslations ?? {};
+  const tags = row.tags;
+  const translations = row.translations;
+  const override: PixivTranslationOverride = row.useTranslationOverride ?? "global";
 
-watchEffect(() => {
-  const useT = Boolean(configStore.settings.pixivUseTranslation);
-  const ex = new Set(configStore.settings.pixivExcludedTags ?? []);
-  const map = new Map<string, { original: string; display: string }[]>();
-  for (const row of store.rows) {
-    const items: { original: string; display: string }[] = [];
-    // 显式无条件读 row.translations 与 row.tags，让 watchEffect 一定追踪到这两个
-    // 字段的变化。即便 useT = false 这次循环没真正使用 trans[t]，也确保了下次切到
-    // true 时依赖图已经建立 —— 不再走 computed lazy 路径上"读了又不读"的灰色地带。
-    const trans = row.translations || {};
-    for (const t of row.tags) {
-      let display = t;
-      if (useT) {
-        const en = trans[t];
-        if (typeof en === "string" && en.length > 0) {
-          display = en;
-        }
+  const useT =
+    override === "translated"
+      ? true
+      : override === "original"
+        ? false
+        : globalUseT;
+
+  const trans = translations || {};
+  const items: { original: string; display: string }[] = [];
+  for (const t of tags) {
+    const excludedByOriginal = ex.has(t);
+    let display = t;
+    if (useT) {
+      const local = localTranslations[t];
+      const remote = trans[t];
+      if (typeof local === "string" && local.length > 0) {
+        display = local;
+      } else if (typeof remote === "string" && remote.length > 0) {
+        display = remote;
       }
-      if (ex.has(display)) continue;
-      items.push({ original: t, display });
     }
-    items.sort((a, b) => a.display.localeCompare(b.display));
-    map.set(row.pid, items);
+    if (excludedByOriginal || ex.has(display)) continue;
+    items.push({ original: t, display });
   }
-  tagsByPid.value = map;
-});
+  items.sort((a, b) => a.display.localeCompare(b.display));
+  return items;
+}
 
 const isExtreme = computed(() => {
   const th = configStore.settings.extremeRowThreshold || DEFAULT_EXTREME_ROW_THRESHOLD;
@@ -121,9 +156,8 @@ const isExtreme = computed(() => {
  * 列定义。**图片列在最前**（用户开启缩略图后，最直接的视觉就在最左侧）。
  * 列自定义会持久化到 localStorage（key = `vtable:col:pixiv:tags`），用户可调整。
  *
- * 排序约定：image > fileName > pid > status > tags > movedTag。"image" 出现在
- * `props.columns` 中的源索引始终为 0，配合 VirtualTable 的"按源索引插入"reconcile，
- * 用户首次开启缩略图时图片列就会出现在最左边而不是被 append 到末尾。
+ * 排序约定：image > fileName > pid > status > tags > movedTag > override。
+ * 译名切换列放最右，跟"已移动到"一样属于行级元数据，避免抢眼挤掉 tag 列宽度。
  */
 const columns = computed<VirtualColumn[]>(() => {
   const cols: VirtualColumn[] = [];
@@ -135,7 +169,8 @@ const columns = computed<VirtualColumn[]>(() => {
     { key: "pid", label: "PID", width: 110, fixed: "left", resizable: true },
     { key: "status", label: "状态", width: 76, slotName: "status", fixed: "left" },
     { key: "tags", label: "标签", minWidth: 360, slotName: "tags", resizable: true },
-    { key: "movedTag", label: "已移动到", width: 160, slotName: "movedTag", resizable: true }
+    { key: "movedTag", label: "已移动到", width: 160, slotName: "movedTag", resizable: true },
+    { key: "override", label: "译名", width: 178, slotName: "override" }
   );
   return cols;
 });
@@ -151,6 +186,39 @@ const statusText = computed(() => {
 const statusClass = computed(() =>
   store.running ? "is-running" : store.rows.length ? "is-done" : "is-idle"
 );
+
+/**
+ * 当前刷新间隔的可读描述，给用户一个明确预期：默认 0 时显示"实时"，
+ * 否则显示"<ms>ms 节流"。
+ */
+const flushIntervalLabel = computed(() => {
+  const v = configStore.settings.pixivPartialFlushIntervalMs;
+  if (typeof v !== "number" || !Number.isFinite(v) || v <= 0) return "实时";
+  return `${Math.min(10000, Math.floor(v))}ms 节流`;
+});
+
+/**
+ * 传给 VirtualTable 的 slot 刷新键。
+ *
+ * tag 气泡 slot 除了 row 本身，还依赖全局译名开关、排除项与本地翻译表；这些状态变化时
+ * row 引用不会变。把它们折成一个轻量 key 传下去，确保虚拟表复用可见行 DOM
+ * 时也会重建 slot cell，立刻把 "キャラ配布(コイカツ)" 切成 "人物卡（恋活）"。
+ */
+const tagSlotRefreshKey = computed(() => {
+  const excluded = configStore.settings.pixivExcludedTags ?? [];
+  const localTranslations = configStore.settings.pixivLocalTagTranslations ?? {};
+  return [
+    configStore.settings.pixivUseTranslation ? "t" : "o",
+    excluded.join("\u001f"),
+    JSON.stringify(localTranslations)
+  ].join("|");
+});
+
+const overrideOptions: { label: string; value: PixivTranslationOverride; tip: string }[] = [
+  { label: "全局", value: "global", tip: "跟随顶部的「使用英文译名」开关" },
+  { label: "原 tag", value: "original", tip: "本行强制显示原始 tag" },
+  { label: "译名", value: "translated", tip: "本行强制显示英文译名（缺译名仍回落原 tag）" }
+];
 
 async function pickOutputDir() {
   try {
@@ -191,24 +259,47 @@ async function stopScan() {
   }
 }
 
-async function retryRow(pid: string) {
+/** 单行重试：用 absPath 定位（不能用 pid，同 PID 多行时 pid 不唯一）。 */
+async function retryRow(absPath: string) {
   try {
-    await store.retry(pid);
+    await store.retry(absPath);
   } catch (e) {
     ElMessage.error(`重试失败：${String(e)}`);
   }
 }
 
 /**
+ * 一键重试所有失败行。store 内部按 PID 去重 + 串行重试，避免一次性发起几百条
+ * HTTP 触发限流。重试期间按钮自旋禁用。
+ */
+async function retryAllFailed() {
+  if (retryingAll.value) return;
+  if (store.errorCount === 0) {
+    ElMessage.info("没有失败的行可重试");
+    return;
+  }
+  retryingAll.value = true;
+  try {
+    const { tried, failed } = await store.retryFailed();
+    if (failed === 0) {
+      ElMessage.success(`已重试 ${tried} 个 PID，全部成功`);
+    } else {
+      ElMessage.warning(`已重试 ${tried} 个 PID，仍有 ${failed} 个失败`);
+    }
+  } catch (e) {
+    ElMessage.error(`批量重试出错：${String(e)}`);
+  } finally {
+    retryingAll.value = false;
+  }
+}
+
+/**
  * 点击 tag 气泡：把 `<row.absPath>` 移到 `<outputDir>/<tag>/`。
  *
- * 这里的 `tag` 参数是模板里 `t.display` —— 即 `tagsByPid` 计算出的"有效字符串"，
- * 开关开时是 en 译名、关时是原 tag。后端按这个字符串建子目录，所以 `movedTag`
- * 自然记录的就是"实际落盘的目录名"。用户翻转开关后看到 highlight 不亮是预期的
- * （chip 文本变了，但文件确实还在那个原始目录里）；想再次按当前显示文本归档
- * 可以再点一次。
+ * `tag` 参数是模板里 `t.display` —— 当前行该显示的字符串（按 row 级 useT 判定）。
+ * 后端按这个字符串建子目录，所以 `movedTag` 自然记录的就是"实际落盘的目录名"。
  */
-async function clickTag(pid: string, tag: string) {
+async function clickTag(absPath: string, tag: string) {
   if (!store.outputDir) {
     ElMessage.warning("请先选择输出目录");
     return;
@@ -216,7 +307,7 @@ async function clickTag(pid: string, tag: string) {
   if (moving.value) return; // 简单避免连点
   moving.value = true;
   try {
-    await store.moveByTag(pid, tag);
+    await store.moveByTag(absPath, tag);
     ElMessage.success(`已移动到 ${tag}`);
   } catch (e) {
     ElMessage.error(`移动失败：${String(e)}`);
@@ -225,8 +316,8 @@ async function clickTag(pid: string, tag: string) {
   }
 }
 
-async function openLocation(filePath: string) {
-  await revealInExplorer(filePath);
+function changeOverride(absPath: string, override: PixivTranslationOverride) {
+  store.setRowTranslationOverride(absPath, override);
 }
 
 onMounted(() => {
@@ -273,13 +364,26 @@ watch(
       <label class="inline-field">
         <!--
           翻译开关：直接绑到 configStore.settings.pixivUseTranslation，
-          配置中心和这里改一处两处都生效（saveSettings 由 SettingsPage 的 watchDebounced 自动落库）。
+          配置中心和这里改一处两处都生效。每行右侧"译名"列可单独覆盖。
         -->
         <span class="field-label">使用英文译名</span>
         <el-switch v-model="configStore.settings.pixivUseTranslation" />
       </label>
 
+      <span class="meta-tip" :title="`刷新策略可在 设置 → Pixiv 标签整理 中调整`">
+        刷新：{{ flushIntervalLabel }}
+      </span>
+
       <div class="actions">
+        <el-button
+          plain
+          :icon="RefreshRight"
+          :loading="retryingAll"
+          :disabled="store.running || store.errorCount === 0"
+          @click="retryAllFailed"
+        >
+          重试失败 ({{ store.errorCount }})
+        </el-button>
         <el-button type="primary" :disabled="store.running" @click="startScan">开始扫描</el-button>
         <el-button type="warning" plain :disabled="!store.running" @click="stopScan">停止</el-button>
       </div>
@@ -300,6 +404,11 @@ watch(
       <span>结果较多，已启用极限性能模式</span>
     </div>
 
+    <!--
+      :key 用 absPath：同 PID 多行时 PID 不唯一，用它做 row-key 会让 VirtualTable
+      把多行视作"同一行"互相覆盖，进而 selection / autoRowHeight 测量都会错乱。
+      absPath 是行的稳定主键。
+    -->
     <VirtualTable
       :key="showImageColumn ? 'pixiv-with-image' : 'pixiv-no-image'"
       class="pixiv-table"
@@ -308,41 +417,26 @@ watch(
       :item-height="36"
       auto-row-height
       :overscan="isExtreme ? EXTREME_OVERSCAN : NORMAL_OVERSCAN"
-      row-key="pid"
+      row-key="absPath"
       column-config-key="pixiv:tags"
+      :slot-refresh-key="tagSlotRefreshKey"
       fit-width
       empty-text="尚无数据，点'开始扫描'识别 Pixiv 图片"
     >
       <template #fileName="{ row }">
-        <!--
-          showImageColumn 关：保留原有 PreviewPanel hover 浮窗（用户没法直接看到图，悬浮再展示是合理的）。
-          开：缩略图常驻，悬浮浮窗就是冗余 + 容易误触，去掉它。
-        -->
-        <PreviewPanel v-if="!showImageColumn" :path="(row as PixivImageState).absPath">
-          <button
-            type="button"
-            class="path-link"
-            :title="stripWindowsExtendedPrefix((row as PixivImageState).absPath)"
-            @click.stop="openLocation((row as PixivImageState).absPath)"
-          >
-            {{ (row as PixivImageState).fileName }}
-          </button>
-        </PreviewPanel>
-        <button
+        <PathPreviewLink
+          v-if="!showImageColumn"
+          :path="(row as PixivImageState).absPath"
+          :label="(row as PixivImageState).fileName"
+        />
+        <PathPreviewLink
           v-else
-          type="button"
-          class="path-link"
-          :title="stripWindowsExtendedPrefix((row as PixivImageState).absPath)"
-          @click.stop="openLocation((row as PixivImageState).absPath)"
-        >
-          {{ (row as PixivImageState).fileName }}
-        </button>
+          :path="(row as PixivImageState).absPath"
+          :label="(row as PixivImageState).fileName"
+          :preview="false"
+        />
       </template>
 
-      <!--
-        缩略图列：直接 convertFileSrc(absPath)，配合 loading="lazy" + 虚拟滚动，
-        只有可见行才会真正加载。alt="" 让浏览器在加载失败时不渲染 broken icon。
-      -->
       <template #image="{ row }">
         <div class="thumb-wrap">
           <img
@@ -362,7 +456,7 @@ watch(
           type="button"
           class="retry-btn"
           :title="(row as PixivImageState).error ?? '点击重试'"
-          @click="retryRow((row as PixivImageState).pid)"
+          @click="retryRow((row as PixivImageState).absPath)"
         >
           重试
         </button>
@@ -371,37 +465,35 @@ watch(
       <!--
         Tag 气泡列：所有 tag 在 cell 里 flex-wrap 自动换行；行高由 VirtualTable 的
         autoRowHeight 模式实测每行内容决定，所以气泡墙能自然撑高、不需要内部滚动。
-        当前已移动到的 tag 会被高亮 + 置灰（再点一次只会得到 ` (1)` 后缀的副本，没意义）。
+        当前已移动到的 tag 会被高亮 + 置灰（再点一次只会得到 ` (1)` 后缀的副本）。
 
-        v-for 直接读 panel 级 ref `tagsByPid`：`watchEffect` 在
-        `pixivUseTranslation` / `pixivExcludedTags` / 行的 `tags + translations`
-        任一变更时立刻重建整张 Map，模板使用 `tagsByPid.value`（自动 unwrap）
-        响应 ref 整体替换。`:key` 用 `original`：toggle 切换时原 tag 不变 →
-        key 不变 → Vue 复用 DOM、只更文本 / disabled 状态。
-        click / 高亮 / title 都用 `display`（当前展示出的字符串，开 toggle 时是 en）。
+        v-for 直接调 panel 内的 `displayTagsForRow(row)` —— render-time 函数路线，
+        每次渲染时同步访问 reactive，依赖一定建立、依赖变化时一定重渲染。
+        `:key` 用 `original`：toggle 切换时原 tag 不变 → key 不变 → Vue 复用 DOM、
+        只更文本 / disabled 状态。click / 高亮 / title 都用 `display`（当前展示的字符串）。
       -->
       <template #tags="{ row }">
         <div class="tag-list">
-          <button
-            v-for="t in tagsByPid.get((row as PixivImageState).pid) || []"
-            :key="t.original"
-            type="button"
-            class="tag-chip"
-            :class="{ 'is-current': (row as PixivImageState).movedTag === t.display }"
-            :disabled="!store.outputDir || moving || (row as PixivImageState).movedTag === t.display"
-            :title="
-              (row as PixivImageState).movedTag === t.display
-                ? `已在 ${t.display}`
-                : store.outputDir
-                  ? `移动到 ${t.display}`
-                  : '请先选择输出目录'
-            "
-            @click="clickTag((row as PixivImageState).pid, t.display)"
-          >
-            {{ t.display }}
-          </button>
+          <template v-for="t in displayTagsForRow(row as PixivImageState)" :key="t.original">
+            <button
+              type="button"
+              class="tag-chip"
+              :class="{ 'is-current': (row as PixivImageState).movedTag === t.display }"
+              :disabled="!store.outputDir || moving || (row as PixivImageState).movedTag === t.display"
+              :title="
+                (row as PixivImageState).movedTag === t.display
+                  ? `已在 ${t.display}`
+                  : store.outputDir
+                    ? `移动到 ${t.display}`
+                    : '请先选择输出目录'
+              "
+              @click="clickTag((row as PixivImageState).absPath, t.display)"
+            >
+              {{ t.display }}
+            </button>
+          </template>
           <span
-            v-if="(tagsByPid.get((row as PixivImageState).pid)?.length ?? 0) === 0"
+            v-if="displayTagsForRow(row as PixivImageState).length === 0"
             class="muted"
           >
             {{ (row as PixivImageState).status === "pending" ? "…" : "无可用标签" }}
@@ -418,6 +510,26 @@ watch(
           → {{ (row as PixivImageState).movedTag }}
         </span>
         <span v-else class="muted">—</span>
+      </template>
+
+      <!--
+        译名覆盖列：segmented 三态控件覆盖单行的译名行为。改值立刻触发上面
+        watchEffect 重算 tagsByAbsPath，那一行的 chip 文本同步刷新。
+      -->
+      <template #override="{ row }">
+        <div class="override-seg">
+          <button
+            v-for="opt in overrideOptions"
+            :key="opt.value"
+            type="button"
+            class="seg-btn"
+            :class="{ 'is-active': ((row as PixivImageState).useTranslationOverride ?? 'global') === opt.value }"
+            :title="opt.tip"
+            @click="changeOverride((row as PixivImageState).absPath, opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
       </template>
     </VirtualTable>
   </Panel>
@@ -457,6 +569,14 @@ watch(
 .output-field {
   flex: 1 1 360px;
   min-width: 280px;
+}
+.meta-tip {
+  font-size: var(--ff-font-xs);
+  color: var(--ff-text-muted);
+  background: var(--ff-bg-muted);
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .status-bar {
@@ -511,24 +631,6 @@ watch(
 .pixiv-table {
   flex: 1;
   min-height: 0;
-}
-
-.path-link {
-  display: block;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-  color: var(--ff-accent);
-  cursor: pointer;
-  font: inherit;
-}
-.path-link:hover {
-  text-decoration: underline;
 }
 
 .status {
@@ -591,7 +693,6 @@ watch(
   opacity: 0.6;
   cursor: not-allowed;
 }
-/* 当前所在 tag：高亮成"已选中"色调；disabled 状态下也保持视觉强调 */
 .tag-chip.is-current {
   background: var(--ff-success-soft, var(--ff-accent-soft));
   color: var(--ff-success, var(--ff-accent));
@@ -609,16 +710,11 @@ watch(
   box-sizing: border-box;
 }
 .thumb {
-  /*
-   * autoRowHeight 模式下行高由 cell 内容决定:这里给一个 80px 的 max-height 上限,
-   * 防止超大图把整行撑得过高;tag 列通常更高,行高最终由 tag 墙决定。
-   */
   max-width: 100%;
   max-height: 80px;
   object-fit: contain;
   border-radius: 4px;
   background: var(--ff-bg-muted);
-  /* 加载失败 / 还在 lazy 加载时占位框仍占据原位置 */
   min-width: 24px;
   min-height: 24px;
 }
@@ -635,5 +731,39 @@ watch(
 .muted {
   color: var(--ff-text-muted);
   font-size: var(--ff-font-sm);
+}
+
+/* ---- 译名覆盖列：自有 segmented 控件 ---- */
+.override-seg {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--ff-border-subtle);
+  border-radius: var(--ff-radius-sm);
+  background: var(--ff-bg-panel);
+  overflow: hidden;
+}
+.seg-btn {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid var(--ff-border-subtle);
+  padding: 2px 8px;
+  font-size: var(--ff-font-xs);
+  color: var(--ff-text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.6;
+  transition: background 0.12s, color 0.12s;
+}
+.seg-btn:last-child {
+  border-right: 0;
+}
+.seg-btn:hover {
+  background: var(--ff-bg-muted);
+}
+.seg-btn.is-active {
+  background: var(--ff-accent);
+  color: var(--ff-bg-panel);
+  font-weight: 600;
 }
 </style>

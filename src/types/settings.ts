@@ -42,6 +42,8 @@ export interface AppSettings {
   pixivTagApiBase: string;
   /** 排除的 tag 列表；这些 tag 不会作为虚拟表的列出现。 */
   pixivExcludedTags: string[];
+  /** 本地 tag 翻译表；key 为 Pixiv 原 tag，value 为本地译名。 */
+  pixivLocalTagTranslations: Record<string, string>;
   /** 可选 Pixiv Cookie；填了之后能拿到 R-18 / 关注限定等受限 tag。 */
   pixivCookie?: string | null;
   /** 可选 HTTP / HTTPS / SOCKS5 代理 URL；中国大陆访问 Pixiv 一般要配。 */
@@ -59,6 +61,14 @@ export interface AppSettings {
    * 单条重试也会去同一队列排号，所以即便用户狂按重试也不会把瞬时速率打穿。
    */
   pixivRateLimitPerMinute: number;
+  /**
+   * Pixiv 增量结果在前端的合并刷新间隔（毫秒）。
+   *
+   * 0 = 即刻：partial 一到达就立刻应用，UI 跟随每条结果跳动；
+   * >0 = 节流：partial 进入缓冲区，按本间隔批量 commit。done 终态会立刻 flush。
+   * UI 限制 0–10000ms。50K 张图配合 500ms 节流时屏幕节奏明显平稳。
+   */
+  pixivPartialFlushIntervalMs: number;
 }
 
 export interface DbPathInfo {

@@ -11,13 +11,11 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { useModToolsStore } from "../stores/modTools";
 import { useConfigStore } from "../stores/config";
 import { useRuntimeStore } from "../stores/runtime";
-import { revealInExplorer } from "../services/task";
 import type { ModIdentityFile, ModVersionGroup } from "../types/modTools";
 import { copyText } from "../utils/clipboard";
 import { formatBytes, formatTimestamp } from "../utils/format";
-import { stripWindowsExtendedPrefix } from "../utils/path";
 import Panel from "./common/Panel.vue";
-import PreviewPanel from "./PreviewPanel.vue";
+import PathPreviewLink from "./PathPreviewLink.vue";
 
 const props = defineProps<{
   paths: string[];
@@ -76,10 +74,6 @@ async function preview() {
   await store.previewVersions(normalized);
   activeGroups.value = [];
   ElMessage.success("检查已开始");
-}
-
-async function openFolder(filePath: string) {
-  await revealInExplorer(filePath);
 }
 
 async function copyCell(row: ModIdentityFile, column: { property?: string }) {
@@ -209,17 +203,7 @@ watch(
               <el-table-column prop="version" label="版本" width="140" resizable />
               <el-table-column prop="filePath" label="文件路径" min-width="340" resizable>
                 <template #default="{ row }">
-                  <PreviewPanel :path="row.filePath">
-                    <button
-                      type="button"
-                      class="path-link"
-                      :disabled="busy"
-                      :title="stripWindowsExtendedPrefix(row.filePath)"
-                      @click.stop="openFolder(row.filePath)"
-                    >
-                      {{ stripWindowsExtendedPrefix(row.filePath) }}
-                    </button>
-                  </PreviewPanel>
+                  <PathPreviewLink :path="row.filePath" :disabled="busy" />
                 </template>
               </el-table-column>
               <el-table-column prop="size" label="大小" width="100" resizable>
@@ -322,28 +306,5 @@ watch(
 }
 .group-table {
   width: 100%;
-}
-.path-link {
-  display: block;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-  color: var(--ff-accent);
-  cursor: pointer;
-}
-
-.path-link:hover {
-  text-decoration: underline;
-}
-
-.path-link:disabled {
-  color: var(--ff-text-muted);
-  cursor: not-allowed;
-  text-decoration: none;
 }
 </style>

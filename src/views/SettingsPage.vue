@@ -8,14 +8,15 @@
  * 滚动容器是 `.settings-scroll`（右侧），导航 `.settings-nav` 是它外层
  * 的网格列，所以 sticky 不会跟着内容滚走。
  */
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { watchDebounced } from "@vueuse/core";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { open } from "@tauri-apps/plugin-dialog";
-import { Folder } from "@element-plus/icons-vue";
+import { open, save as saveFile } from "@tauri-apps/plugin-dialog";
+import { Delete, Download, Edit, Folder, Plus, Upload } from "@element-plus/icons-vue";
 import { useConfigStore } from "../stores/config";
 import { THEME_OPTIONS } from "../constants/theme";
 import { stripWindowsExtendedPrefix } from "../utils/path";
+import { readTextFile, writeTextFile } from "../services/settings";
 import Panel from "../components/common/Panel.vue";
 
 const configStore = useConfigStore();
@@ -196,13 +197,15 @@ function ioMultiplierLabel(val: number) {
 const excludedTagBuffer = ref("");
 const excludedInputRef = ref<HTMLInputElement | null>(null);
 const excludedSeparators = /[;；]/;
+const localTranslationKey = ref("");
+const localTranslationValue = ref("");
+const localTranslationSearch = ref("");
 
 function getExcludedTags(): string[] {
   return configStore.settings.pixivExcludedTags ?? [];
 }
 
-/** 设置时去重 + trim,保证 chip 列里没有重复或空白项。 */
-function setExcludedTags(tags: string[]) {
+function normalizeTagList(tags: string[]) {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const t of tags) {
@@ -211,7 +214,12 @@ function setExcludedTags(tags: string[]) {
     seen.add(s);
     out.push(s);
   }
-  configStore.settings.pixivExcludedTags = out;
+  return out;
+}
+
+/** 设置时去重 + trim,保证 chip 列里没有重复或空白项。 */
+function setExcludedTags(tags: string[]) {
+  configStore.settings.pixivExcludedTags = normalizeTagList(tags);
 }
 
 function removeExcludedTag(tag: string) {
@@ -264,6 +272,199 @@ function onExcludedKeydown(e: KeyboardEvent) {
       e.preventDefault();
       setExcludedTags(tags.slice(0, -1));
     }
+  }
+}
+
+function getLocalTranslations(): Record<string, string> {
+  return configStore.settings.pixivLocalTagTranslations ?? {};
+}
+
+function normalizeLocalTranslations(input: Record<string, unknown>) {
+  const out: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(input)) {
+    const key = rawKey.trim();
+    const value = typeof rawValue === "string" ? rawValue.trim() : String(rawValue ?? "").trim();
+    if (!key || !value) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+function setLocalTranslations(input: Record<string, unknown>) {
+  configStore.settings.pixivLocalTagTranslations = normalizeLocalTranslations(input);
+}
+
+const localTranslationEntries = computed(() => {
+  const q = localTranslationSearch.value.trim().toLowerCase();
+  const entries = Object.entries(getLocalTranslations()).sort(([a], [b]) => a.localeCompare(b));
+  if (!q) return entries;
+  return entries.filter(([key, value]) =>
+    key.toLowerCase().includes(q) || value.toLowerCase().includes(q)
+  );
+});
+
+function upsertLocalTranslation() {
+  const key = localTranslationKey.value.trim();
+  const value = localTranslationValue.value.trim();
+  if (!key || !value) {
+    ElMessage.warning("请填写原 tag 和本地译名");
+    return;
+  }
+  setLocalTranslations({ ...getLocalTranslations(), [key]: value });
+  localTranslationKey.value = "";
+  localTranslationValue.value = "";
+}
+
+function editLocalTranslation(key: string, value: string) {
+  localTranslationKey.value = key;
+  localTranslationValue.value = value;
+}
+
+function removeLocalTranslation(key: string) {
+  const next = { ...getLocalTranslations() };
+  delete next[key];
+  setLocalTranslations(next);
+}
+
+function parseExcludedTagImport(content: string): string[] {
+  const trimmed = content.trim();
+  if (!trimmed) return [];
+  try {
+    const data = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(data)) return normalizeTagList(data.map((v) => String(v)));
+    if (data && typeof data === "object" && Array.isArray((data as { tags?: unknown }).tags)) {
+      return normalizeTagList(((data as { tags: unknown[] }).tags).map((v) => String(v)));
+    }
+  } catch {
+    // 非 JSON 时继续按纯文本解析。
+  }
+  return normalizeTagList(trimmed.split(/[;\n\r,，；]+/));
+}
+
+function parseLocalTranslationImport(content: string): Record<string, string> {
+  const trimmed = content.trim();
+  if (!trimmed) return {};
+  try {
+    const data = JSON.parse(trimmed) as unknown;
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const obj = data as Record<string, unknown>;
+      if (obj.translations && typeof obj.translations === "object" && !Array.isArray(obj.translations)) {
+        return normalizeLocalTranslations(obj.translations as Record<string, unknown>);
+      }
+      return normalizeLocalTranslations(obj);
+    }
+    if (Array.isArray(data)) {
+      const out: Record<string, unknown> = {};
+      for (const item of data) {
+        if (Array.isArray(item) && item.length >= 2) {
+          out[String(item[0])] = String(item[1]);
+        } else if (item && typeof item === "object") {
+          const row = item as Record<string, unknown>;
+          const key = row.tag ?? row.original ?? row.key;
+          const value = row.translation ?? row.value ?? row.display;
+          if (key != null && value != null) out[String(key)] = String(value);
+        }
+      }
+      return normalizeLocalTranslations(out);
+    }
+  } catch {
+    // 非 JSON 时继续按一行一条解析。
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const line of trimmed.split(/\r?\n/)) {
+    const s = line.trim();
+    if (!s || s.startsWith("#")) continue;
+    const match = s.match(/^(.+?)(?:\t|=|,|，)(.+)$/);
+    if (!match) continue;
+    out[match[1]] = match[2];
+  }
+  return normalizeLocalTranslations(out);
+}
+
+async function exportExcludedTags() {
+  commitExcludedInput();
+  try {
+    const path = await saveFile({
+      title: "导出排除 tag",
+      defaultPath: "pixiv-excluded-tags.json",
+      filters: [{ name: "JSON", extensions: ["json"] }]
+    });
+    if (!path) return;
+    const payload = {
+      type: "pixivExcludedTags",
+      version: 1,
+      tags: getExcludedTags()
+    };
+    await writeTextFile(path, `${JSON.stringify(payload, null, 2)}\n`);
+    ElMessage.success("排除 tag 已导出");
+  } catch (e) {
+    ElMessage.error(`导出排除 tag 失败：${String(e)}`);
+  }
+}
+
+async function importExcludedTags() {
+  try {
+    const selected = await open({
+      directory: false,
+      multiple: false,
+      title: "导入排除 tag",
+      filters: [{ name: "Tag 列表", extensions: ["json", "txt", "csv"] }]
+    });
+    if (typeof selected !== "string" || !selected) return;
+    const imported = parseExcludedTagImport(await readTextFile(selected));
+    if (!imported.length) {
+      ElMessage.warning("没有识别到可导入的 tag");
+      return;
+    }
+    const before = getExcludedTags().length;
+    setExcludedTags([...getExcludedTags(), ...imported]);
+    ElMessage.success(`已导入 ${getExcludedTags().length - before} 个新排除 tag`);
+  } catch (e) {
+    ElMessage.error(`导入排除 tag 失败：${String(e)}`);
+  }
+}
+
+async function exportLocalTranslations() {
+  try {
+    const path = await saveFile({
+      title: "导出本地 tag 翻译",
+      defaultPath: "pixiv-local-tag-translations.json",
+      filters: [{ name: "JSON", extensions: ["json"] }]
+    });
+    if (!path) return;
+    const payload = {
+      type: "pixivLocalTagTranslations",
+      version: 1,
+      translations: getLocalTranslations()
+    };
+    await writeTextFile(path, `${JSON.stringify(payload, null, 2)}\n`);
+    ElMessage.success("本地 tag 翻译已导出");
+  } catch (e) {
+    ElMessage.error(`导出本地 tag 翻译失败：${String(e)}`);
+  }
+}
+
+async function importLocalTranslations() {
+  try {
+    const selected = await open({
+      directory: false,
+      multiple: false,
+      title: "导入本地 tag 翻译",
+      filters: [{ name: "翻译表", extensions: ["json", "txt", "csv"] }]
+    });
+    if (typeof selected !== "string" || !selected) return;
+    const imported = parseLocalTranslationImport(await readTextFile(selected));
+    const count = Object.keys(imported).length;
+    if (!count) {
+      ElMessage.warning("没有识别到可导入的翻译项");
+      return;
+    }
+    const before = Object.keys(getLocalTranslations()).length;
+    setLocalTranslations({ ...getLocalTranslations(), ...imported });
+    ElMessage.success(`已导入 ${Object.keys(getLocalTranslations()).length - before} 个新翻译项，已有项按导入文件覆盖`);
+  } catch (e) {
+    ElMessage.error(`导入本地 tag 翻译失败：${String(e)}`);
   }
 }
 
@@ -576,8 +777,34 @@ watchDebounced(
               </div>
 
               <div class="form-row">
+                <label class="label">UI 刷新间隔（毫秒）</label>
+                <div class="flex-input">
+                  <el-input-number
+                    v-model="configStore.settings.pixivPartialFlushIntervalMs"
+                    :min="0"
+                    :max="10000"
+                    :step="100"
+                    controls-position="right"
+                  />
+                  <span class="hint-inline">
+                    后端拉取结果到达前端的合并刷新节奏。`0` = 实时（默认，每条结果立刻刷
+                    chip 与状态）；`>0` = 节流，多个结果合并到一次 commit。
+                    扫描几万张图时 `300–800` 能明显降低视觉抖动；不影响后端拉取速度。
+                    `done` 终态会立刻 flush，统计不被节流拖延。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
                 <label class="label">排除的 tag</label>
                 <div class="flex-input">
+                  <div class="field-toolbar">
+                    <span class="count-pill">{{ getExcludedTags().length }} 个 tag</span>
+                    <div class="field-actions">
+                      <el-button size="small" :icon="Upload" @click="importExcludedTags">导入</el-button>
+                      <el-button size="small" :icon="Download" @click="exportExcludedTags">导出</el-button>
+                    </div>
+                  </div>
                   <!--
                     自定义气泡输入:点击容器聚焦输入框,输入 ; / ; 自动拆成 chip;
                     Backspace 在空输入框上删最后一个;Enter / 失焦提交剩余 buffer。
@@ -613,8 +840,73 @@ watchDebounced(
                   <span class="hint">
                     输入 tag 名,多个之间用半角 `;` 或全角 `；` 分隔,会自动变成气泡。
                     点 chip 上的 × 删除,光标在最末位置按 Backspace 也能删掉最后一个。
-                    匹配的是当前面板上"显示出来"的字符串——开了译名开关就按译名匹配,
-                    关了就按原 tag 匹配。
+                    排除判断会同时匹配原 tag 与当前显示文本。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">本地 tag 翻译</label>
+                <div class="flex-input">
+                  <div class="field-toolbar">
+                    <span class="count-pill">{{ Object.keys(getLocalTranslations()).length }} 条翻译</span>
+                    <el-input
+                      v-model="localTranslationSearch"
+                      size="small"
+                      class="translation-search"
+                      placeholder="搜索原 tag / 译名"
+                      clearable
+                    />
+                    <div class="field-actions">
+                      <el-button size="small" :icon="Upload" @click="importLocalTranslations">导入</el-button>
+                      <el-button size="small" :icon="Download" @click="exportLocalTranslations">导出</el-button>
+                    </div>
+                  </div>
+
+                  <div class="translation-editor">
+                    <el-input
+                      v-model="localTranslationKey"
+                      placeholder="原 tag"
+                      clearable
+                    />
+                    <el-input
+                      v-model="localTranslationValue"
+                      placeholder="本地译名"
+                      clearable
+                      @keydown.enter.prevent="upsertLocalTranslation"
+                    />
+                    <el-button type="primary" :icon="Plus" @click="upsertLocalTranslation">添加 / 更新</el-button>
+                  </div>
+
+                  <div v-if="localTranslationEntries.length" class="translation-list ff-scroll">
+                    <div
+                      v-for="[key, value] in localTranslationEntries"
+                      :key="key"
+                      class="translation-row"
+                    >
+                      <span class="translation-key" :title="key">{{ key }}</span>
+                      <span class="translation-arrow">→</span>
+                      <span class="translation-value" :title="value">{{ value }}</span>
+                      <el-button
+                        text
+                        size="small"
+                        type="primary"
+                        :icon="Edit"
+                        @click="editLocalTranslation(key, value)"
+                      />
+                      <el-button
+                        text
+                        size="small"
+                        type="danger"
+                        :icon="Delete"
+                        @click="removeLocalTranslation(key)"
+                      />
+                    </div>
+                  </div>
+                  <span v-else class="hint">暂无本地翻译。开启"使用英文译名显示"后，本地译名会优先于 Pixiv 返回的 translation.en。</span>
+                  <span class="hint">
+                    导入 JSON 对象示例：{"{ \"コイカツ\": \"恋活\" }"}；也支持每行 `原 tag=译名`。
+                    已有相同原 tag 时，导入内容会覆盖本地旧译名。
                   </span>
                 </div>
               </div>
@@ -819,6 +1111,74 @@ watchDebounced(
   margin-left: 10px;
 }
 
+.field-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.field-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.count-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: var(--ff-radius-sm);
+  background: var(--ff-bg-muted);
+  color: var(--ff-text-muted);
+  font-size: var(--ff-font-xs);
+}
+.translation-search {
+  max-width: 220px;
+}
+.translation-editor {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) auto;
+  gap: 8px;
+}
+.translation-list {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--ff-border-subtle);
+  border-radius: var(--ff-radius-sm);
+  background: var(--ff-bg-panel);
+}
+.translation-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--ff-border-subtle);
+}
+.translation-row:last-child {
+  border-bottom: 0;
+}
+.translation-key,
+.translation-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.translation-key {
+  color: var(--ff-text-secondary);
+}
+.translation-value {
+  color: var(--ff-text-primary);
+  font-weight: 500;
+}
+.translation-arrow {
+  color: var(--ff-text-muted);
+  font-size: var(--ff-font-xs);
+}
+
 /* ---- 排除 tag 的气泡输入容器 ---- */
 .chip-input {
   display: flex;
@@ -876,6 +1236,19 @@ watchDebounced(
   .form-row {
     grid-template-columns: 1fr;
     gap: var(--ff-space-1);
+  }
+  .field-actions {
+    margin-left: 0;
+  }
+  .translation-editor {
+    grid-template-columns: 1fr;
+  }
+  .translation-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .translation-arrow,
+  .translation-value {
+    display: none;
   }
 }
 </style>

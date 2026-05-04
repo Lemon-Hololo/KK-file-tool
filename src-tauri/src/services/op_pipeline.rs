@@ -95,11 +95,22 @@ pub fn resolve_zip_preview_max_entries(db_path: &Path) -> usize {
 }
 
 /// 构造一个临时 rayon 线程池用于本次并行操作；避免污染全局池。
-fn rayon_pool(n: usize) -> AppResult<ThreadPool> {
+///
+/// 调用方传入已经解析好的线程数；记录流水线内部通常配合
+/// [`resolve_thread_count`] 使用。
+pub fn rayon_pool(n: usize) -> AppResult<ThreadPool> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(n.max(1))
         .build()
         .map_err(|e| AppError::Internal(format!("创建线程池失败: {e}")))
+}
+
+/// 解析记录名：用户未传入时使用统一的时间戳格式。
+///
+/// 记录型操作和哈希记录都使用同一格式，避免各服务模块重复硬编码
+/// `"%Y-%m-%d_%H-%M-%S"`。
+pub fn record_name_or_timestamp(record_name: Option<String>) -> String {
+    record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string())
 }
 
 /// `parallel_move` 每条输入的执行结果：
@@ -273,9 +284,6 @@ where
     )
 }
 
-/// 把预先计算好的结果写入记录表，并映射为 `ModOpApplyResponse`。
-///
-/// 供 `persist_apply_rename_pairs` 与 `persist_apply_with_executor` 共享。
 /// 把已执行完成的一批结果写入记录表，并映射为 `ModOpApplyResponse`。
 ///
 /// 大多数业务应优先用 `persist_apply_rename_pairs` 或
@@ -510,9 +518,7 @@ pub fn rollback(
                 // 不需要这一步，但跨卷 copy 一定要）
                 if let Some(parent) = final_old.parent() {
                     if !to_extended_length_path(parent).exists() {
-                        if let Err(e) =
-                            std::fs::create_dir_all(to_extended_length_path(parent))
-                        {
+                        if let Err(e) = std::fs::create_dir_all(to_extended_length_path(parent)) {
                             return RollbackOutcome {
                                 item,
                                 status: "failed",

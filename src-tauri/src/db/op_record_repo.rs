@@ -9,7 +9,7 @@
 //! 避免在 `suffix_repo.rs` / `mod_tools_repo.rs` 维护两份几乎相同的 SQL。
 //!
 //! # 调用约定
-//! - 每次调用独立开 `Connection::open`，与项目其余 repo 一致。
+//! - 每次调用通过 `db::open_connection` 独立打开连接，与项目其余 repo 一致。
 //! - 所有 item 表结构必须为：
 //!   `id / record_id / old_path / new_path / apply_success / apply_error /`
 //!   `rollback_success / rollback_error / updated_at`
@@ -17,9 +17,12 @@
 
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::params;
 
-use crate::error::{AppError, AppResult};
+use crate::{
+    db::open_connection,
+    error::{AppError, AppResult},
+};
 
 /// 描述一对"记录主表 + item 子表"的表名和附加列。
 ///
@@ -73,10 +76,6 @@ pub struct OpRecordDetail {
     pub items: Vec<OpRecordItem>,
 }
 
-fn conn(db_path: &Path) -> AppResult<Connection> {
-    Connection::open(db_path).map_err(|e| AppError::Db(e.to_string()))
-}
-
 /// 插入记录主表。
 ///
 /// `record_id` 由调用方预生成（业务侧通常需要在 apply 之前就知道 record_id 用于
@@ -95,7 +94,7 @@ pub fn create_record(
     source_paths_json: &str,
     created_at: i64,
 ) -> AppResult<()> {
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
 
     let sql = if let Some(col) = tables.extra_summary_column {
         format!(
@@ -152,7 +151,7 @@ pub fn batch_insert_items(
     items: &[(&str, &str, bool, Option<&str>)],
     updated_at: i64,
 ) -> AppResult<Vec<i64>> {
-    let mut conn = conn(db_path)?;
+    let mut conn = open_connection(db_path)?;
     let tx = conn
         .transaction()
         .map_err(|e| AppError::Db(e.to_string()))?;
@@ -194,7 +193,7 @@ pub fn list_records(
     tables: OpRecordTables,
     filter_extra_eq: Option<&str>,
 ) -> AppResult<Vec<OpRecordSummary>> {
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
 
     let extra_col = tables.extra_summary_column.unwrap_or("NULL");
     let where_clause = match (tables.extra_summary_column, filter_extra_eq) {
@@ -253,7 +252,7 @@ pub fn get_record_detail(
     tables: OpRecordTables,
     record_id: &str,
 ) -> AppResult<OpRecordDetail> {
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
 
     let extra_col = tables.extra_summary_column.unwrap_or("NULL");
     let summary_sql = format!(
@@ -325,7 +324,7 @@ pub fn batch_update_rollback_results(
     updates: &[(i64, bool, Option<&str>)],
     updated_at: i64,
 ) -> AppResult<()> {
-    let mut conn = conn(db_path)?;
+    let mut conn = open_connection(db_path)?;
     let tx = conn
         .transaction()
         .map_err(|e| AppError::Db(e.to_string()))?;
@@ -359,7 +358,7 @@ pub fn set_record_rollback_status(
     record_id: &str,
     status: &str,
 ) -> AppResult<()> {
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
     let sql = format!(
         "UPDATE {rt} SET rollback_status = ? WHERE record_id = ?",
         rt = tables.record_table
@@ -371,7 +370,7 @@ pub fn set_record_rollback_status(
 
 /// 按 `record_id` 删除记录；相关 item 通过 FK `ON DELETE CASCADE` 自动清除。
 pub fn delete_record(db_path: &Path, tables: OpRecordTables, record_id: &str) -> AppResult<()> {
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
     let sql = format!(
         "DELETE FROM {rt} WHERE record_id = ?",
         rt = tables.record_table
@@ -392,7 +391,7 @@ pub fn rename_record(
     if name.is_empty() {
         return Err(AppError::InvalidInput("记录名不能为空".to_string()));
     }
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
     let sql = format!(
         "UPDATE {rt} SET record_name = ? WHERE record_id = ?",
         rt = tables.record_table

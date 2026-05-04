@@ -7,8 +7,8 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -20,10 +20,11 @@ use crate::{
     models::{DuplicateGroup, TaskStatus},
 };
 
+/// 单个长任务的运行时控制状态。
 pub struct TaskRuntime {
-    pub paused: AtomicBool,
-    pub cancelled: AtomicBool,
-    pub status: Mutex<TaskStatus>,
+    paused: AtomicBool,
+    cancelled: AtomicBool,
+    status: Mutex<TaskStatus>,
 }
 
 impl TaskRuntime {
@@ -46,6 +47,29 @@ impl TaskRuntime {
     pub fn set_status(&self, status: TaskStatus) {
         *self.status.lock().unwrap() = status;
     }
+
+    /// 标记任务进入暂停态；实际暂停点由任务循环自己检查 `is_paused`。
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+        self.set_status(TaskStatus::Paused);
+    }
+
+    /// 标记任务恢复运行。
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::Relaxed);
+        self.set_status(TaskStatus::Running);
+    }
+
+    /// 请求取消任务；已提交的工作单元可能仍会跑完。
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+        self.set_status(TaskStatus::Cancelled);
+    }
+
+    /// 当前状态快照，用于需要只读检查的命令。
+    pub fn status(&self) -> TaskStatus {
+        self.status.lock().unwrap().clone()
+    }
 }
 
 impl Default for TaskRuntime {
@@ -54,11 +78,12 @@ impl Default for TaskRuntime {
     }
 }
 
+/// Tauri 应用共享状态，集中管理数据库路径、长任务运行时和去重结果缓存。
 pub struct AppState {
     pub app_data_dir: PathBuf,
     pub db_path: PathBuf,
-    pub tasks: Mutex<HashMap<String, Arc<TaskRuntime>>>,
-    pub task_results: Mutex<HashMap<String, Vec<DuplicateGroup>>>,
+    tasks: Mutex<HashMap<String, Arc<TaskRuntime>>>,
+    task_results: Mutex<HashMap<String, Vec<DuplicateGroup>>>,
 }
 
 impl AppState {
@@ -86,13 +111,72 @@ impl AppState {
     where
         F: FnOnce(&Arc<TaskRuntime>) -> R,
     {
-        let tasks = self.tasks.lock().unwrap();
-        let runtime = tasks.get(task_id).ok_or(AppError::TaskNotFound)?;
-        Ok(f(runtime))
+        let runtime = self
+            .tasks
+            .lock()
+            .unwrap()
+            .get(task_id)
+            .cloned()
+            .ok_or(AppError::TaskNotFound)?;
+        Ok(f(&runtime))
     }
 
-    pub fn insert_task(&self, task_id: String, runtime: Arc<TaskRuntime>) {
+    fn insert_task(&self, task_id: String, runtime: Arc<TaskRuntime>) {
         self.tasks.lock().unwrap().insert(task_id, runtime);
+    }
+
+    /// 创建并注册一个新的任务运行时，返回 `(task_id, runtime)`。
+    ///
+    /// 前端可预传 `task_id` 以避免事件早于监听器到达；空白 ID 会被忽略并自动生成。
+    pub fn create_task(&self, preferred_task_id: Option<String>) -> (String, Arc<TaskRuntime>) {
+        let task_id = preferred_task_id
+            .and_then(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let runtime = Arc::new(TaskRuntime::new());
+        self.insert_task(task_id.clone(), runtime.clone());
+        (task_id, runtime)
+    }
+
+    /// 从运行中任务表移除任务；终态收尾统一走这里，避免外部直接碰锁。
+    pub fn remove_task(&self, task_id: &str) {
+        self.tasks.lock().unwrap().remove(task_id);
+    }
+
+    /// 是否存在运行中或暂停中的长任务。
+    pub fn has_active_tasks(&self) -> bool {
+        self.tasks
+            .lock()
+            .unwrap()
+            .values()
+            .any(|runtime| matches!(runtime.status(), TaskStatus::Running | TaskStatus::Paused))
+    }
+
+    /// 覆盖保存某个去重任务的当前结果。
+    pub fn set_task_results(&self, task_id: String, groups: Vec<DuplicateGroup>) {
+        self.task_results.lock().unwrap().insert(task_id, groups);
+    }
+
+    /// 原地更新某个去重任务的结果并返回更新后的快照。
+    pub fn update_task_results<F>(&self, task_id: &str, f: F) -> Vec<DuplicateGroup>
+    where
+        F: FnOnce(&mut Vec<DuplicateGroup>),
+    {
+        let mut task_map = self.task_results.lock().unwrap();
+        let groups = task_map.entry(task_id.to_string()).or_default();
+        f(groups);
+        groups.clone()
+    }
+
+    /// 清空所有去重任务结果缓存，通常用于重建数据库后同步清内存状态。
+    pub fn clear_task_results(&self) {
+        self.task_results.lock().unwrap().clear();
     }
 
     pub fn default_db_path(&self) -> PathBuf {

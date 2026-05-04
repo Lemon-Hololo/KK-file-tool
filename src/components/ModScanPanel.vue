@@ -15,13 +15,11 @@ import { useStorage } from "@vueuse/core";
 
 import { useModToolsStore } from "../stores/modTools";
 import { useConfigStore } from "../stores/config";
-import { revealInExplorer } from "../services/task";
 import { DEFAULT_EXTREME_ROW_THRESHOLD, EXTREME_OVERSCAN, NORMAL_OVERSCAN } from "../constants/task";
-import { stripWindowsExtendedPrefix } from "../utils/path";
 import type { ModScanMatch } from "../types/modTools";
 import type { VirtualColumn } from "../types/virtualTable";
 import Panel from "./common/Panel.vue";
-import PreviewPanel from "./PreviewPanel.vue";
+import PathPreviewLink from "./PathPreviewLink.vue";
 import VirtualTable from "./common/VirtualTable.vue";
 
 const props = defineProps<{
@@ -90,10 +88,6 @@ async function stopScan() {
   } catch (e) {
     ElMessage.error(String(e));
   }
-}
-
-async function openFolder(filePath: string) {
-  await revealInExplorer(filePath);
 }
 
 function onSelectionChange(rows: unknown[]) {
@@ -203,17 +197,7 @@ onBeforeUnmount(() => {
       @selection-change="onSelectionChange"
     >
       <template #filePath="{ row }">
-        <PreviewPanel :path="row.filePath">
-          <button
-            type="button"
-            class="path-link"
-            :disabled="panelBusy"
-            :title="stripWindowsExtendedPrefix(row.filePath)"
-            @click.stop="openFolder(row.filePath)"
-          >
-            {{ stripWindowsExtendedPrefix(row.filePath) }}
-          </button>
-        </PreviewPanel>
+        <PathPreviewLink :path="row.filePath" :disabled="panelBusy" />
       </template>
     </VirtualTable>
   </Panel>
@@ -305,30 +289,5 @@ onBeforeUnmount(() => {
 .scan-table {
   flex: 1;
   min-height: 0;
-}
-
-.path-link {
-  display: block;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-  color: var(--ff-accent);
-  cursor: pointer;
-  font: inherit;
-}
-
-.path-link:hover {
-  text-decoration: underline;
-}
-
-.path-link:disabled {
-  color: var(--ff-text-muted);
-  cursor: not-allowed;
-  text-decoration: none;
 }
 </style>

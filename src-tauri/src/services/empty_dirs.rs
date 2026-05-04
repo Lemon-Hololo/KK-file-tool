@@ -101,7 +101,7 @@ pub fn apply_empty_dir_cleanup(
         })
         .collect();
 
-    let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+    let name = op_pipeline::record_name_or_timestamp(record_name);
     let record_id = Uuid::new_v4().to_string();
     // 空文件夹清理不参与 Mod 工具的回滚开关，永远可撤回。
     let response = op_pipeline::persist_apply_results(

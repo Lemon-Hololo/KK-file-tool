@@ -37,3 +37,13 @@ export async function deleteDatabase() {
 export async function getCpuCount() {
   return invokeCmd<number>("get_cpu_count");
 }
+
+/** 读取用户选择的 UTF-8 文本文件。 */
+export async function readTextFile(path: string) {
+  return invokeCmd<string>("read_text_file", { path });
+}
+
+/** 写入 UTF-8 文本到用户选择的文件路径。 */
+export async function writeTextFile(path: string, content: string) {
+  return invokeCmd<void>("write_text_file", { path, content });
+}

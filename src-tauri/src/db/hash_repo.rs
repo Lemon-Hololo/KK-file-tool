@@ -5,16 +5,13 @@
 
 use std::{collections::HashSet, path::Path};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 
 use crate::{
+    db::open_connection,
     error::{AppError, AppResult},
     models::{HashIndexEntry, HashIndexRecord, HashIndexRecordSummary},
 };
-
-fn conn(db_path: &Path) -> AppResult<Connection> {
-    Connection::open(db_path).map_err(|e| AppError::Db(e.to_string()))
-}
 
 /// 事务写入一条记录 + 其下所有 entries。返回新生成的 `record_id`。
 pub fn insert_hash_record(
@@ -24,7 +21,7 @@ pub fn insert_hash_record(
     entries: &[HashIndexEntry],
     created_at: i64,
 ) -> AppResult<String> {
-    let mut conn = conn(db_path)?;
+    let mut conn = open_connection(db_path)?;
     let tx = conn.transaction()?;
 
     let record_id = uuid::Uuid::new_v4().to_string();
@@ -59,7 +56,7 @@ pub fn insert_hash_record(
 
 /// 列出所有哈希记录的摘要（按创建时间降序，不含 entries）。
 pub fn list_hash_records(db_path: &Path) -> AppResult<Vec<HashIndexRecordSummary>> {
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
     let mut stmt = conn.prepare(
         r#"
     SELECT r.record_id, r.record_name, r.created_at, r.source_paths,
@@ -91,7 +88,7 @@ pub fn list_hash_records(db_path: &Path) -> AppResult<Vec<HashIndexRecordSummary
 
 /// 读取单条记录的完整详情（含所有 entries）。
 pub fn load_hash_record(db_path: &Path, record_id: &str) -> AppResult<HashIndexRecord> {
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
 
     let (rid, name, created_at, source_json): (String, String, i64, String) = conn.query_row(
     "SELECT record_id, record_name, created_at, source_paths FROM hash_records WHERE record_id = ?",
@@ -139,7 +136,7 @@ pub fn rename_hash_record(db_path: &Path, record_id: &str, new_name: &str) -> Ap
     if name.is_empty() {
         return Err(AppError::InvalidInput("记录名不能为空".to_string()));
     }
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
     let affected = conn.execute(
         "UPDATE hash_records SET record_name = ? WHERE record_id = ?",
         params![name, record_id],
@@ -152,7 +149,7 @@ pub fn rename_hash_record(db_path: &Path, record_id: &str, new_name: &str) -> Ap
 
 /// 事务：删除主表 + 关联 entries。
 pub fn delete_hash_record(db_path: &Path, record_id: &str) -> AppResult<()> {
-    let mut conn = conn(db_path)?;
+    let mut conn = open_connection(db_path)?;
     let tx = conn.transaction()?;
     tx.execute(
         "DELETE FROM hash_entries WHERE record_id = ?",
@@ -172,7 +169,7 @@ pub fn load_active_hash_set(
     selected_record_id: Option<&str>,
     use_last_if_none: bool,
 ) -> AppResult<HashSet<String>> {
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
 
     let rid = if let Some(r) = selected_record_id {
         Some(r.to_string())

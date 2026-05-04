@@ -6,9 +6,10 @@
 
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 
 use crate::{
+    db::open_connection,
     error::{AppError, AppResult},
     models::AppSettings,
 };
@@ -25,7 +26,7 @@ use crate::{
 ///   `rollback_enabled`（三类记录主表，标记单条记录创建时是否启用回滚）。
 ///   重复列错误忽略。
 pub fn init_schema(db_path: &Path) -> AppResult<()> {
-    let conn = Connection::open(db_path).map_err(|e| AppError::Db(e.to_string()))?;
+    let conn = open_connection(db_path)?;
 
     conn.execute_batch(
         r#"
@@ -265,6 +266,10 @@ pub fn init_schema(db_path: &Path) -> AppResult<()> {
         [],
     );
     let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN pixiv_local_tag_translations TEXT NOT NULL DEFAULT '{}'",
+        [],
+    );
+    let _ = conn.execute(
         "ALTER TABLE app_settings ADD COLUMN pixiv_cookie TEXT NULL",
         [],
     );
@@ -280,6 +285,11 @@ pub fn init_schema(db_path: &Path) -> AppResult<()> {
     // Pixiv 限速：每分钟最大请求数。0 = 不限速；UI 限制最小 1。默认 60（每秒 1 条）。
     let _ = conn.execute(
         "ALTER TABLE app_settings ADD COLUMN pixiv_rate_limit_per_minute INTEGER NOT NULL DEFAULT 60",
+        [],
+    );
+    // Pixiv 增量结果合并刷新间隔（毫秒）。0 = 即刻应用；>0 = 节流到固定间隔。
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN pixiv_partial_flush_interval_ms INTEGER NOT NULL DEFAULT 0",
         [],
     );
 

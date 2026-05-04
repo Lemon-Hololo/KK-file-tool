@@ -3,15 +3,14 @@
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
-use uuid::Uuid;
 
 use crate::{
-    app_state::{AppState, TaskRuntime},
+    app_state::AppState,
     models::DedupConfig,
     services::{dedup, events},
 };
 
-/// 启动一次去重任务；把 `TaskRuntime` 注册进 `AppState.tasks` 后立即返回 `task_id`。
+/// 启动一次去重任务；注册 `TaskRuntime` 后立即返回 `task_id`。
 ///
 /// 后续通过 `pause_task` / `resume_task` / `stop_task` 控制，结果通过
 /// `task_log` / `task_progress` / `task_result_partial` / `task_completed` 事件推送。
@@ -30,11 +29,7 @@ pub async fn start_dedup_task(
         return Err("至少需要一个路径".to_string());
     }
 
-    let task_id = task_id
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let runtime = Arc::new(TaskRuntime::new());
-    state.insert_task(task_id.clone(), runtime.clone());
+    let (task_id, runtime) = state.create_task(task_id);
 
     let state_clone = state.inner().clone();
     let app_clone = app.clone();

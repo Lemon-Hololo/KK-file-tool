@@ -20,7 +20,6 @@ use std::{
     time::SystemTime,
 };
 
-use chrono::Local;
 use rayon::prelude::*;
 use tauri::AppHandle;
 use walkdir::WalkDir;
@@ -58,15 +57,21 @@ pub fn preview_mod_duplicates(
     let mut grouped: HashMap<(String, String, String), CollectSlot<ModIdentityFile>> =
         HashMap::new();
 
-    process_candidates(db_path, paths, &runtime, log.as_ref(), |batch, _processed| {
-        for file in batch {
-            push_collect_slot(
-                &mut grouped,
-                (file.guid.clone(), file.author.clone(), file.version.clone()),
-                file,
-            );
-        }
-    })
+    process_candidates(
+        db_path,
+        paths,
+        &runtime,
+        log.as_ref(),
+        |batch, _processed| {
+            for file in batch {
+                push_collect_slot(
+                    &mut grouped,
+                    (file.guid.clone(), file.author.clone(), file.version.clone()),
+                    file,
+                );
+            }
+        },
+    )
     .map_err(AppError::Internal)?;
 
     let mut groups: Vec<ModDuplicateGroup> = grouped
@@ -99,11 +104,17 @@ pub fn preview_mod_versions(
     let runtime = TaskRuntime::default();
     let mut grouped: HashMap<(String, String), CollectSlot<ModIdentityFile>> = HashMap::new();
 
-    process_candidates(db_path, paths, &runtime, log.as_ref(), |batch, _processed| {
-        for file in batch {
-            push_collect_slot(&mut grouped, (file.guid.clone(), file.author.clone()), file);
-        }
-    })
+    process_candidates(
+        db_path,
+        paths,
+        &runtime,
+        log.as_ref(),
+        |batch, _processed| {
+            for file in batch {
+                push_collect_slot(&mut grouped, (file.guid.clone(), file.author.clone()), file);
+            }
+        },
+    )
     .map_err(AppError::Internal)?;
 
     let mut groups: Vec<ModVersionGroup> = grouped
@@ -235,7 +246,13 @@ pub async fn run_duplicate_scan(
                 );
             }
 
-            events::emit_progress(&app, &task_id, stages::MOD_DUPLICATE, processed.done, processed.total);
+            events::emit_progress(
+                &app,
+                &task_id,
+                stages::MOD_DUPLICATE,
+                processed.done,
+                processed.total,
+            );
         },
     )?;
 
@@ -250,7 +267,7 @@ pub async fn run_duplicate_scan(
                 done: true,
             },
         );
-        app_state.tasks.lock().unwrap().remove(&task_id);
+        app_state.remove_task(&task_id);
         return Ok(());
     }
 
@@ -268,7 +285,7 @@ pub async fn run_duplicate_scan(
         "重复 MOD 检查完成：匹配 {} 组",
         count_duplicate_groups(&grouped)
     ));
-    app_state.tasks.lock().unwrap().remove(&task_id);
+    app_state.remove_task(&task_id);
     Ok(())
 }
 
@@ -341,7 +358,13 @@ pub async fn run_version_scan(
                 );
             }
 
-            events::emit_progress(&app, &task_id, stages::MOD_VERSION, processed.done, processed.total);
+            events::emit_progress(
+                &app,
+                &task_id,
+                stages::MOD_VERSION,
+                processed.done,
+                processed.total,
+            );
         },
     )?;
 
@@ -356,7 +379,7 @@ pub async fn run_version_scan(
                 done: true,
             },
         );
-        app_state.tasks.lock().unwrap().remove(&task_id);
+        app_state.remove_task(&task_id);
         return Ok(());
     }
 
@@ -374,7 +397,7 @@ pub async fn run_version_scan(
         "不同版本 MOD 检查完成：匹配 {} 组",
         count_version_groups(&grouped)
     ));
-    app_state.tasks.lock().unwrap().remove(&task_id);
+    app_state.remove_task(&task_id);
     Ok(())
 }
 
@@ -430,10 +453,8 @@ where
         return Ok(());
     }
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(op_pipeline::resolve_thread_count(db_path).max(1))
-        .build()
-        .map_err(|e| format!("创建线程池失败: {e}"))?;
+    let pool = op_pipeline::rayon_pool(op_pipeline::resolve_thread_count(db_path))
+        .map_err(|e| e.to_string())?;
 
     // 第二遍：分块并行解析 manifest，每块完成后立刻回调聚合。
     let mut done = 0usize;
@@ -525,7 +546,7 @@ fn apply_mod_delete(
         }
     };
 
-    let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+    let name = op_pipeline::record_name_or_timestamp(record_name);
     op_pipeline::persist_apply_with_executor(
         db_path,
         MOD_OP_TABLES,

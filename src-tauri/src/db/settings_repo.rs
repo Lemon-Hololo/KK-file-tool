@@ -1,21 +1,15 @@
 //! 单行 `app_settings` 表的读写。
 
+use std::collections::HashMap;
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::params;
 
-use crate::{
-    error::{AppError, AppResult},
-    models::AppSettings,
-};
-
-fn conn(db_path: &Path) -> AppResult<Connection> {
-    Connection::open(db_path).map_err(|e| AppError::Db(e.to_string()))
-}
+use crate::{db::open_connection, error::AppResult, models::AppSettings};
 
 /// 读取用户设置；表有 `CHECK(id = 1)` 约束保证仅一行。
 pub fn get_settings(db_path: &Path) -> AppResult<AppSettings> {
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
     let settings = conn.query_row(
         r#"SELECT keep_policy, move_target_path, save_record_enabled, use_last_record_enabled,
                   include_current_folder_duplicates, theme_mode, thread_count,
@@ -24,7 +18,8 @@ pub fn get_settings(db_path: &Path) -> AppResult<AppSettings> {
                   mod_scan_default_keyword, suffix_default_target,
                   mod_rollback_enabled, mod_backup_dir,
                   pixiv_tag_api_base, pixiv_excluded_tags, pixiv_cookie, pixiv_proxy,
-                  pixiv_use_translation, pixiv_rate_limit_per_minute
+                  pixiv_use_translation, pixiv_rate_limit_per_minute,
+                  pixiv_partial_flush_interval_ms, pixiv_local_tag_translations
            FROM app_settings WHERE id = 1"#,
         [],
         |r| {
@@ -32,6 +27,10 @@ pub fn get_settings(db_path: &Path) -> AppResult<AppSettings> {
             // 不阻塞设置读取——历史脏数据/手改库导致的损坏应当宽容降级。
             let excluded_raw: String = r.get(17)?;
             let excluded = serde_json::from_str::<Vec<String>>(&excluded_raw).unwrap_or_default();
+            let local_translations_raw: String = r.get(23)?;
+            let local_translations =
+                serde_json::from_str::<HashMap<String, String>>(&local_translations_raw)
+                    .unwrap_or_default();
 
             Ok(AppSettings {
                 keep_policy: r.get(0)?,
@@ -52,10 +51,12 @@ pub fn get_settings(db_path: &Path) -> AppResult<AppSettings> {
                 mod_backup_dir: r.get(15)?,
                 pixiv_tag_api_base: r.get(16)?,
                 pixiv_excluded_tags: excluded,
+                pixiv_local_tag_translations: local_translations,
                 pixiv_cookie: r.get(18)?,
                 pixiv_proxy: r.get(19)?,
                 pixiv_use_translation: r.get::<_, i32>(20)? != 0,
                 pixiv_rate_limit_per_minute: r.get(21)?,
+                pixiv_partial_flush_interval_ms: r.get(22)?,
             })
         },
     )?;
@@ -64,10 +65,12 @@ pub fn get_settings(db_path: &Path) -> AppResult<AppSettings> {
 
 /// 全量覆盖写入设置。
 pub fn save_settings(db_path: &Path, settings: &AppSettings) -> AppResult<()> {
-    let conn = conn(db_path)?;
+    let conn = open_connection(db_path)?;
     // pixiv_excluded_tags 序列化失败极少；失败时落 "[]" 兜底，避免单条设置阻塞整体保存。
-    let excluded_json = serde_json::to_string(&settings.pixiv_excluded_tags)
-        .unwrap_or_else(|_| "[]".to_string());
+    let excluded_json =
+        serde_json::to_string(&settings.pixiv_excluded_tags).unwrap_or_else(|_| "[]".to_string());
+    let local_translations_json = serde_json::to_string(&settings.pixiv_local_tag_translations)
+        .unwrap_or_else(|_| "{}".to_string());
     conn.execute(
         r#"UPDATE app_settings
            SET keep_policy = ?, move_target_path = ?, save_record_enabled = ?, use_last_record_enabled = ?,
@@ -77,7 +80,8 @@ pub fn save_settings(db_path: &Path, settings: &AppSettings) -> AppResult<()> {
                mod_scan_default_keyword = ?, suffix_default_target = ?,
                mod_rollback_enabled = ?, mod_backup_dir = ?,
                pixiv_tag_api_base = ?, pixiv_excluded_tags = ?, pixiv_cookie = ?, pixiv_proxy = ?,
-               pixiv_use_translation = ?, pixiv_rate_limit_per_minute = ?
+               pixiv_use_translation = ?, pixiv_rate_limit_per_minute = ?,
+               pixiv_partial_flush_interval_ms = ?, pixiv_local_tag_translations = ?
            WHERE id = 1"#,
         params![
             settings.keep_policy,
@@ -102,6 +106,8 @@ pub fn save_settings(db_path: &Path, settings: &AppSettings) -> AppResult<()> {
             settings.pixiv_proxy,
             settings.pixiv_use_translation as i32,
             settings.pixiv_rate_limit_per_minute,
+            settings.pixiv_partial_flush_interval_ms,
+            local_translations_json,
         ],
     )?;
     Ok(())

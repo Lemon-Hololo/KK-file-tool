@@ -5,7 +5,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use chrono::Local;
 use rayon::prelude::*;
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -113,10 +112,8 @@ pub fn preview_mod_rename(
         }
     }
 
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(op_pipeline::resolve_thread_count(db_path).max(1))
-        .build()
-        .map_err(|e| format!("创建线程池失败: {e}"))?;
+    let pool = op_pipeline::rayon_pool(op_pipeline::resolve_thread_count(db_path))
+        .map_err(|e| e.to_string())?;
 
     let mut seeds: Vec<PreviewSeed> = pool.install(|| {
         candidates
@@ -242,7 +239,7 @@ pub fn apply_mod_rename(
         }
     }
 
-    let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+    let name = op_pipeline::record_name_or_timestamp(record_name);
     let record_id = Uuid::new_v4().to_string();
 
     // Mod 重命名是纯反向 rename，不参与"启用 Mod 操作回滚"开关，永远可撤回。

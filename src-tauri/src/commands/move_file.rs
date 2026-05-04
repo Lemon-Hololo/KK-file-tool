@@ -99,17 +99,13 @@ pub fn apply_move_action(
 
     // 更新内存中的任务结果：把已成功移动的文件从 groups 里剔除，
     // 仅剩 1 个文件的组也移除（不再算重复）。
-    let updated_groups = {
-        let moved_set: HashSet<String> = moved_paths.into_iter().collect();
-        let mut task_map = state.task_results.lock().unwrap();
-        let groups = task_map.entry(task_id.clone()).or_default();
-
+    let moved_set: HashSet<String> = moved_paths.into_iter().collect();
+    let updated_groups = state.update_task_results(&task_id, |groups| {
         for g in groups.iter_mut() {
             g.files.retain(|f| !moved_set.contains(&f.abs_path));
         }
         groups.retain(|g| g.files.len() > 1);
-        groups.clone()
-    };
+    });
 
     let _ = app.emit(
         events::MOVE_REPORT_READY,

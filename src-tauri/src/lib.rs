@@ -59,6 +59,8 @@ pub fn run() {
             commands::settings::set_custom_db_path,
             commands::settings::delete_database,
             commands::settings::get_cpu_count,
+            commands::settings::read_text_file,
+            commands::settings::write_text_file,
             // hash records
             commands::records::list_hash_records,
             commands::records::load_hash_record,

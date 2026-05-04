@@ -1,10 +1,10 @@
 //! 扫描 .zip/.zipmod 中 manifest.xml 含指定关键字的文件。
 //!
-//! 作为长任务运行，共用 `AppState.tasks` + `TaskRuntime`，支持取消。
+//! 作为长任务运行，共用 `AppState` 注册的 `TaskRuntime`，支持取消。
 
 use std::{
     path::PathBuf,
-    sync::{atomic::AtomicUsize, Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicUsize},
 };
 
 use tauri::AppHandle;
@@ -59,7 +59,7 @@ pub async fn run_scan(
 
     if runtime.is_cancelled() {
         emit_final(&app, &task_id, &runtime, &keyword_trim, vec![], 0, 0, true);
-        app_state.tasks.lock().unwrap().remove(&task_id);
+        app_state.remove_task(&task_id);
         return Ok(());
     }
 
@@ -166,7 +166,7 @@ pub async fn run_scan(
     );
 
     // 清理 tasks 表
-    app_state.tasks.lock().unwrap().remove(&task_id);
+    app_state.remove_task(&task_id);
 
     Ok(())
 }

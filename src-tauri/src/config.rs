@@ -67,3 +67,12 @@ pub const DEFAULT_PIXIV_TAG_API_BASE: &str = "https://www.pixiv.net/ajax/illust/
 /// 是相当保守的速率，不会触发常见的 IP 限流策略。需要更激进的批量可在设置里调高，
 /// 但同时要看 Cookie / 代理的状态——纯游客身份建议保留 60 或更低。
 pub const DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE: i32 = 60;
+
+/// Pixiv 增量结果在前端的合并刷新间隔（毫秒）。
+///
+/// 0 = 即刻：partial 一到达 store 就立刻 commit（行 UI 会跟着每条结果实时跳动，
+/// 50K 张图的批量场景下视觉上比较密集）。
+/// >0 = 节流：partial 进入缓冲区，按本间隔批量 commit 一次（用户能稳稳读完每屏
+/// 内容再看下一波刷新）。**间隔到了的当下立即 flush 一次，确保 done 终态不被
+/// 拖延**。UI 限制最大 10000ms 兜底。
+pub const DEFAULT_PIXIV_PARTIAL_FLUSH_INTERVAL_MS: i32 = 0;

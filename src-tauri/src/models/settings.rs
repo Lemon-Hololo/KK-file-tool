@@ -1,13 +1,15 @@
 //! 应用设置与数据库路径信息模型。
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
     DEFAULT_EXTREME_ROW_THRESHOLD, DEFAULT_IO_CONCURRENCY_MULTIPLIER, DEFAULT_KEEP_POLICY,
     DEFAULT_LOG_MAX_LENGTH, DEFAULT_MOD_ROLLBACK_ENABLED, DEFAULT_MOD_SCAN_KEYWORD,
-    DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE, DEFAULT_PIXIV_TAG_API_BASE, DEFAULT_SUFFIX_TARGET,
-    DEFAULT_TEXT_PREVIEW_MAX_KB, DEFAULT_THEME_MODE, DEFAULT_THREAD_COUNT,
-    DEFAULT_ZIP_PREVIEW_MAX_ENTRIES,
+    DEFAULT_PIXIV_PARTIAL_FLUSH_INTERVAL_MS, DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE,
+    DEFAULT_PIXIV_TAG_API_BASE, DEFAULT_SUFFIX_TARGET, DEFAULT_TEXT_PREVIEW_MAX_KB,
+    DEFAULT_THEME_MODE, DEFAULT_THREAD_COUNT, DEFAULT_ZIP_PREVIEW_MAX_ENTRIES,
 };
 
 /// 持久化到 `app_settings` 单行表的用户设置。
@@ -66,6 +68,10 @@ pub struct AppSettings {
     pub pixiv_tag_api_base: String,
     /// 排除的 tag 列表；这些 tag 不会作为虚拟表的列出现，避免噪音列。
     pub pixiv_excluded_tags: Vec<String>,
+    /// 本地 tag 翻译表；key 为 Pixiv 原 tag，value 为用户维护的本地译名。
+    ///
+    /// 面板处于译名显示模式时，本地译名优先级高于 Pixiv 响应里的 `translation.en`。
+    pub pixiv_local_tag_translations: HashMap<String, String>,
     /// 可选 Pixiv Cookie（PHPSESSID 等）；填了之后能拿到 R-18 / 关注限定等受限 tag。
     pub pixiv_cookie: Option<String>,
     /// 可选 HTTP / HTTPS / SOCKS5 代理 URL；中国大陆访问 Pixiv 一般要配。
@@ -86,6 +92,12 @@ pub struct AppSettings {
     /// "下一可用时刻"队列上，保证整个长任务的速率不超过 `per_minute / 60` 次/秒。
     /// `0` 视为"不限速"（仅给测试 / 高级用户用，UI 限制最小为 1）。
     pub pixiv_rate_limit_per_minute: i32,
+    /// Pixiv 增量结果在前端的合并刷新间隔（毫秒）。
+    ///
+    /// `0` = 即刻：partial 一到达就立刻应用，UI 跟随每条结果跳动；
+    /// `>0` = 节流：partial 进入缓冲区，按本间隔批量 commit。done 终态会立刻 flush
+    /// 一次，不被节流拖延。UI 限制最大 10000ms。
+    pub pixiv_partial_flush_interval_ms: i32,
 }
 
 impl Default for AppSettings {
@@ -109,10 +121,12 @@ impl Default for AppSettings {
             mod_backup_dir: None,
             pixiv_tag_api_base: DEFAULT_PIXIV_TAG_API_BASE.to_string(),
             pixiv_excluded_tags: Vec::new(),
+            pixiv_local_tag_translations: HashMap::new(),
             pixiv_cookie: None,
             pixiv_proxy: None,
             pixiv_use_translation: false,
             pixiv_rate_limit_per_minute: DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE,
+            pixiv_partial_flush_interval_ms: DEFAULT_PIXIV_PARTIAL_FLUSH_INTERVAL_MS,
         }
     }
 }

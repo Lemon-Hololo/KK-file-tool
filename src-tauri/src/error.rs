@@ -20,7 +20,7 @@ pub enum AppError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
 
-    /// 指定的 `task_id` 在 `AppState.tasks` 中不存在。
+    /// 指定的 `task_id` 不在当前运行任务表中。
     #[error("task not found")]
     TaskNotFound,
 

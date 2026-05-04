@@ -9,10 +9,8 @@
 import { ref, watch } from "vue";
 import { useStorage } from "@vueuse/core";
 import type { DuplicateGroup, FileEntry } from "../types/task";
-import { revealInExplorer } from "../services/task";
 import { formatTimestamp, formatBytes } from "../utils/format";
-import { stripWindowsExtendedPrefix } from "../utils/path";
-import PreviewPanel from "./PreviewPanel.vue";
+import PathPreviewLink from "./PathPreviewLink.vue";
 
 const props = defineProps<{
   groups: DuplicateGroup[];
@@ -72,10 +70,6 @@ function setKeepByMode(group: DuplicateGroup, mode: "newest" | "oldest") {
 
 function setKeepByFile(group: DuplicateGroup, row: FileEntry) {
   group.files.forEach((f) => (f.selectedForMove = f.absPath !== row.absPath));
-}
-
-async function openFolder(filePath: string) {
-  await revealInExplorer(filePath);
 }
 
 watch(
@@ -140,16 +134,7 @@ watch(
             </el-table-column>
             <el-table-column prop="absPath" label="文件路径" min-width="300" resizable>
               <template #default="{ row }">
-                <PreviewPanel :path="row.absPath">
-                  <button
-                    type="button"
-                    class="path-link"
-                    :title="stripWindowsExtendedPrefix(row.absPath)"
-                    @click.stop="openFolder(row.absPath)"
-                  >
-                    {{ stripWindowsExtendedPrefix(row.absPath) }}
-                  </button>
-                </PreviewPanel>
+                <PathPreviewLink :path="row.absPath" />
               </template>
             </el-table-column>
             <el-table-column prop="size" label="大小" width="100" resizable>
@@ -274,24 +259,6 @@ watch(
 }
 .group-table :deep(.el-table__row) {
   cursor: pointer;
-}
-
-.path-link {
-  display: block;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-  color: var(--ff-accent);
-  cursor: pointer;
-}
-
-.path-link:hover {
-  text-decoration: underline;
 }
 
 .load-more {

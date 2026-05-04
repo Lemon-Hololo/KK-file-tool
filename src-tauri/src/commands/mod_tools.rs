@@ -6,10 +6,9 @@
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
-use uuid::Uuid;
 
 use crate::{
-    app_state::{AppState, TaskRuntime},
+    app_state::AppState,
     models::{
         ModDuplicateGroup, ModDuplicatePartialPayload, ModOpApplyResponse, ModOpRecordDetail,
         ModOpRecordSummary, ModOpRollbackCheck, ModOpRollbackResponse, ModOrganizePreviewItem,
@@ -21,6 +20,13 @@ use crate::{
         mod_tools::{self, cleanup, modify, organize, rename, scan},
     },
 };
+
+/// 长任务启动后的兜底失败收尾：发失败状态 / 失败事件，并清理任务表。
+fn finalize_spawned_task_failed(app: &AppHandle, state: &Arc<AppState>, task_id: &str, err: &str) {
+    events::emit_state_changed(app, task_id, "Failed");
+    events::emit_task_failed(app, task_id, err);
+    state.remove_task(task_id);
+}
 
 // ---- 重命名 ----
 
@@ -105,9 +111,7 @@ pub async fn start_mod_duplicate_task(
         return Err("至少需要一个路径".to_string());
     }
 
-    let task_id = task_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let runtime = Arc::new(TaskRuntime::new());
-    state.insert_task(task_id.clone(), runtime.clone());
+    let (task_id, runtime) = state.create_task(task_id);
 
     let state_clone = state.inner().clone();
     let app_clone = app.clone();
@@ -124,8 +128,6 @@ pub async fn start_mod_duplicate_task(
         .await;
 
         if let Err(err) = result {
-            events::emit_state_changed(&app_clone, &task_id_clone, "Failed");
-            events::emit_task_failed(&app_clone, &task_id_clone, &err);
             events::emit_mod_duplicate_partial(
                 &app_clone,
                 &ModDuplicatePartialPayload {
@@ -134,7 +136,7 @@ pub async fn start_mod_duplicate_task(
                     done: true,
                 },
             );
-            state_clone.tasks.lock().unwrap().remove(&task_id_clone);
+            finalize_spawned_task_failed(&app_clone, &state_clone, &task_id_clone, &err);
         }
     });
 
@@ -186,9 +188,7 @@ pub async fn start_mod_version_task(
         return Err("至少需要一个路径".to_string());
     }
 
-    let task_id = task_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let runtime = Arc::new(TaskRuntime::new());
-    state.insert_task(task_id.clone(), runtime.clone());
+    let (task_id, runtime) = state.create_task(task_id);
 
     let state_clone = state.inner().clone();
     let app_clone = app.clone();
@@ -205,8 +205,6 @@ pub async fn start_mod_version_task(
         .await;
 
         if let Err(err) = result {
-            events::emit_state_changed(&app_clone, &task_id_clone, "Failed");
-            events::emit_task_failed(&app_clone, &task_id_clone, &err);
             events::emit_mod_version_partial(
                 &app_clone,
                 &ModVersionPartialPayload {
@@ -215,7 +213,7 @@ pub async fn start_mod_version_task(
                     done: true,
                 },
             );
-            state_clone.tasks.lock().unwrap().remove(&task_id_clone);
+            finalize_spawned_task_failed(&app_clone, &state_clone, &task_id_clone, &err);
         }
     });
 
@@ -334,8 +332,7 @@ pub fn rename_mod_op_record(
 
 /// 启动 Mod 关键字扫描长任务，返回 `task_id`。
 ///
-/// 取消通过共享的 [`crate::commands::runtime::stop_task`] 命令完成
-/// （扫描任务也插入到 `AppState.tasks`）。
+/// 取消通过共享的 [`crate::commands::runtime::stop_task`] 命令完成。
 #[tauri::command]
 pub async fn start_mod_scan_task(
     app: AppHandle,
@@ -351,9 +348,7 @@ pub async fn start_mod_scan_task(
         return Err("关键字不能为空".to_string());
     }
 
-    let task_id = task_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let runtime = Arc::new(TaskRuntime::new());
-    state.insert_task(task_id.clone(), runtime.clone());
+    let (task_id, runtime) = state.create_task(task_id);
 
     let state_clone = state.inner().clone();
     let app_clone = app.clone();
@@ -362,7 +357,7 @@ pub async fn start_mod_scan_task(
     tauri::async_runtime::spawn(async move {
         let result = scan::run_scan(
             app_clone.clone(),
-            state_clone,
+            state_clone.clone(),
             task_id_clone.clone(),
             paths,
             keyword,
@@ -371,8 +366,7 @@ pub async fn start_mod_scan_task(
         .await;
 
         if let Err(err) = result {
-            events::emit_state_changed(&app_clone, &task_id_clone, "Failed");
-            events::emit_task_failed(&app_clone, &task_id_clone, &err);
+            finalize_spawned_task_failed(&app_clone, &state_clone, &task_id_clone, &err);
         }
     });
 

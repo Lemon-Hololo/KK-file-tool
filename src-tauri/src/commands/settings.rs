@@ -1,5 +1,6 @@
 //! 设置与数据库路径管理命令。
 
+use std::path::Path;
 use std::sync::Arc;
 
 use tauri::State;
@@ -9,7 +10,7 @@ use crate::{
     constants::{db_file, theme},
     db::{schema, settings_repo},
     external_config,
-    models::{AppSettings, DbPathInfo, TaskStatus},
+    models::{AppSettings, DbPathInfo},
 };
 
 /// 读取当前用户设置。
@@ -79,14 +80,8 @@ pub fn set_custom_db_path(state: State<'_, Arc<AppState>>, path: String) -> Resu
 /// 有运行中 / 暂停中任务时拒绝执行，避免文件被占用。
 #[tauri::command]
 pub fn delete_database(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    {
-        let tasks = state.tasks.lock().unwrap();
-        for (_, runtime) in tasks.iter() {
-            let status = runtime.status.lock().unwrap();
-            if matches!(*status, TaskStatus::Running | TaskStatus::Paused) {
-                return Err("有任务正在运行，无法删除数据库".to_string());
-            }
-        }
+    if state.has_active_tasks() {
+        return Err("有任务正在运行，无法删除数据库".to_string());
     }
 
     if state.db_path.exists() {
@@ -97,7 +92,7 @@ pub fn delete_database(state: State<'_, Arc<AppState>>) -> Result<(), String> {
 
     schema::init_schema(&state.db_path).map_err(|e| format!("重建数据库失败: {e}"))?;
 
-    state.task_results.lock().unwrap().clear();
+    state.clear_task_results();
 
     Ok(())
 }
@@ -108,4 +103,32 @@ pub fn delete_database(state: State<'_, Arc<AppState>>) -> Result<(), String> {
 #[tauri::command]
 pub fn get_cpu_count() -> usize {
     num_cpus::get()
+}
+
+// ===== 设置导入 / 导出辅助 =====
+
+/// 读取用户通过系统文件选择框选中的 UTF-8 文本文件。
+#[tauri::command]
+pub fn read_text_file(path: String) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("文件路径不能为空".to_string());
+    }
+    std::fs::read_to_string(trimmed).map_err(|e| format!("读取文件失败: {e}"))
+}
+
+/// 把前端生成的 UTF-8 文本写入用户通过系统保存框选择的路径。
+#[tauri::command]
+pub fn write_text_file(path: String, content: String) -> Result<(), String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("文件路径不能为空".to_string());
+    }
+    let p = Path::new(trimmed);
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
+        }
+    }
+    std::fs::write(p, content).map_err(|e| format!("写入文件失败: {e}"))
 }

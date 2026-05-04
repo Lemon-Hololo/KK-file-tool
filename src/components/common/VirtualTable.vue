@@ -142,6 +142,15 @@ const props = withDefaults(
      * 实现见组件顶部 `# 行高` 一节。默认 false——按 itemHeight 走固定行高的传统模式。
      */
     autoRowHeight?: boolean;
+    /**
+     * 外部 slot 内容刷新键。
+     *
+     * 当具名 slot 的展示依赖行数据之外的响应式状态时（例如 Pixiv tag cell 依赖
+     * 全局"使用译名"开关），调用方可传入一个随外部状态变化的轻量 revision。
+     * VirtualTable 会把它附加到具名 slot 单元格的 vnode key 上，强制这些 cell
+     * 在 revision 变化时重建，避免虚拟滚动复用旧 slot 子树。
+     */
+    slotRefreshKey?: string | number | boolean;
   }>(),
   {
     itemHeight: 36,
@@ -640,6 +649,11 @@ function renderCell(row: any, col: RenderColumn, index: number): string {
   return raw == null ? "" : String(raw);
 }
 
+function cellVNodeKey(col: RenderColumn): string {
+  if (!col.slotName || props.slotRefreshKey == null) return col.key;
+  return `${col.key}:${String(props.slotRefreshKey)}`;
+}
+
 async function copyCellText(text: string) {
   const value = text.trim();
   if (!props.copyable || !value) return;
@@ -1126,7 +1140,7 @@ function onDragPointerEnd(e: PointerEvent) {
                 : { top: `${row.top}px`, height: `${itemHeight}px` }"
               @click="emit('rowClick', row.data)"
             >
-              <template v-for="col in renderColumns" :key="col.key">
+              <template v-for="col in renderColumns" :key="cellVNodeKey(col)">
                 <div
                   class="cell"
                   :class="{ ellipsis: col.ellipsis, 'fixed-left': col.fixed === 'left' }"

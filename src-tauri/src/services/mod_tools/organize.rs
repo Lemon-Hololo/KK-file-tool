@@ -2,7 +2,6 @@
 
 use std::{collections::HashSet, path::Path};
 
-use chrono::Local;
 use uuid::Uuid;
 
 use crate::{
@@ -102,7 +101,7 @@ pub fn apply_mod_organize(
         }
     }
 
-    let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+    let name = op_pipeline::record_name_or_timestamp(record_name);
     let record_id = Uuid::new_v4().to_string();
 
     // Mod 归类是纯反向 rename，不参与"启用 Mod 操作回滚"开关，永远可撤回。

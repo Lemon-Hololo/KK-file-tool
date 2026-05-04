@@ -46,10 +46,12 @@ export const useConfigStore = defineStore("config", {
       // Pixiv 标签整理
       pixivTagApiBase: "https://www.pixiv.net/ajax/illust/",
       pixivExcludedTags: [],
+      pixivLocalTagTranslations: {},
       pixivCookie: "",
       pixivProxy: "",
       pixivUseTranslation: false,
       pixivRateLimitPerMinute: 60,
+      pixivPartialFlushIntervalMs: 0,
     } as AppSettings,
 
     dbPathInfo: null as DbPathInfo | null,

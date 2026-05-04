@@ -45,6 +45,17 @@ export interface PixivTagFetchResult {
 /** 行的拉取状态。 */
 export type PixivRowStatus = "pending" | "ok" | "error";
 
+/**
+ * 行级译名覆盖：
+ * - `global`：跟随全局 `pixivUseTranslation` 开关（默认）
+ * - `translated`：强制用 en 译名（缺译名仍回落原 tag）
+ * - `original`：强制用原 tag
+ *
+ * 这是行级别的"覆盖"，独立于全局开关。用户在某一行点"强制用译名"后，即便全局
+ * 关掉了译名开关，那一行的 chip 仍然显示 en 译名；同理可以反过来"独立保留原 tag"。
+ */
+export type PixivTranslationOverride = "global" | "translated" | "original";
+
 /** 表中一行的完整状态：候选信息 + 拉取结果 + UI 状态。 */
 export interface PixivImageState {
   absPath: string;
@@ -67,4 +78,9 @@ export interface PixivImageState {
    * （文件确实在那个目录里），highlight 不会触发但用户能直接看到 movedTag 列里的目录名。
    */
   movedTag: string | null;
+  /**
+   * 行级译名覆盖；默认 `global`。每行右侧操作列里有个三态切换控件改这个值，
+   * 让用户对个别图片有"逆全局开关"的精细控制。
+   */
+  useTranslationOverride: PixivTranslationOverride;
 }

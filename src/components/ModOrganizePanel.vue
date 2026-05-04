@@ -3,12 +3,10 @@
 
 import { computed } from "vue";
 
-import { revealInExplorer } from "../services/task";
 import { useModToolsStore } from "../stores/modTools";
-import { stripWindowsExtendedPrefix } from "../utils/path";
 import type { VirtualColumn } from "../types/virtualTable";
 import OpsPanel from "./common/OpsPanel.vue";
-import PreviewPanel from "./PreviewPanel.vue";
+import PathPreviewLink from "./PathPreviewLink.vue";
 
 const props = defineProps<{
   paths: string[];
@@ -49,10 +47,6 @@ function rollback(itemIds?: number[] | null) {
   const id = store.organizeApplyResult?.recordId!;
   return store.rollback(id, itemIds, true);
 }
-
-async function openFolder(path: string) {
-  await revealInExplorer(path);
-}
 </script>
 
 <template>
@@ -74,44 +68,7 @@ async function openFolder(path: string) {
     :rollback="rollback"
   >
     <template #oldPath="{ row }">
-      <PreviewPanel :path="row.oldPath">
-        <button
-          type="button"
-          class="path-link"
-          :disabled="store.busy.organize"
-          :title="stripWindowsExtendedPrefix(row.oldPath)"
-          @click.stop="openFolder(row.oldPath)"
-        >
-          {{ stripWindowsExtendedPrefix(row.oldPath) }}
-        </button>
-      </PreviewPanel>
+      <PathPreviewLink :path="row.oldPath" :disabled="store.busy.organize" />
     </template>
   </OpsPanel>
 </template>
-
-<style scoped>
-.path-link {
-  display: block;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: none;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  text-align: left;
-  color: var(--ff-accent);
-  cursor: pointer;
-  font: inherit;
-}
-
-.path-link:hover {
-  text-decoration: underline;
-}
-
-.path-link:disabled {
-  color: var(--ff-text-muted);
-  cursor: not-allowed;
-  text-decoration: none;
-}
-</style>

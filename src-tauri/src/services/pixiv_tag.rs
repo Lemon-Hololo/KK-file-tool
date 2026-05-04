@@ -10,9 +10,9 @@
 //! - HTTP：`reqwest` + `Referer: https://www.pixiv.net/` + 浏览器 UA + 可选 Cookie。
 //! - 并发：`tokio::sync::Semaphore`，许可数 = `min(thread × io_mult, 8)`。
 //!   Pixiv 对 ajax 接口存在限流，硬上限 8 已足够吃满本地带宽，再高也只是触发 429。
-//! - 取消：[`crate::app_state::TaskRuntime::cancelled`]，每个并发任务起手与拿到 permit 后双重检查。
+//! - 取消：通过 [`crate::app_state::TaskRuntime::is_cancelled`] 读取，每个并发任务起手与拿到 permit 后双重检查。
 //! - 终态：无论成功 / 失败 / 取消，最后必须发一条 `done = true` 的 partial 并把任务从
-//!   `state.tasks` 移除，否则前端的 running 状态永远卡住、HashMap 也会泄漏。
+//!   `AppState` 中移除，否则前端的 running 状态永远卡住、HashMap 也会泄漏。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -33,7 +33,7 @@ use crate::{
     models::{PixivImageRow, PixivTagFetchResult, PixivTagPartialItem, PixivTagPartialPayload},
     services::{events, op_pipeline},
     utils::{
-        filename::{resolve_conflict, sanitize_filename, ILLEGAL_FILENAME_CHARS},
+        filename::{resolve_conflict_with_reserved, sanitize_filename, ILLEGAL_FILENAME_CHARS},
         path::{to_extended_length_path, to_user_friendly_path},
     },
 };
@@ -56,6 +56,9 @@ const PARTIAL_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
 /// 浏览器 UA：Pixiv ajax 对 UA 做粗略筛查，curl 默认 UA 会被拒。
 const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                           (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+
+/// Pixiv ajax 在浏览器请求里会带语言偏好；补上它能让 tag 翻译字段更接近页面实际返回。
+const ACCEPT_LANGUAGE: &str = "zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7";
 
 /// PID 提取正则：8~9 位连续数字，前后是非数字（用 `(?:^|\D)` / `(?:$|\D)` 模拟单词边界，
 /// 因为 `\b` 在 Unicode 模式下对 ASCII 数字仍然成立，但显式更稳）。
@@ -198,6 +201,14 @@ fn build_http_client(cookie: Option<&str>, proxy: Option<&str>) -> AppResult<Cli
         reqwest::header::USER_AGENT,
         reqwest::header::HeaderValue::from_static(BROWSER_UA),
     );
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/json, text/javascript, */*; q=0.01"),
+    );
+    headers.insert(
+        reqwest::header::ACCEPT_LANGUAGE,
+        reqwest::header::HeaderValue::from_static(ACCEPT_LANGUAGE),
+    );
     if let Some(raw) = cookie.and_then(|s| {
         let trimmed = s.trim();
         if trimmed.is_empty() {
@@ -278,6 +289,39 @@ fn build_request_url(base: &str, pid: &str) -> String {
     }
 }
 
+/// 从 Pixiv ajax JSON 中提取原 tag 列表与 `translation.en` 映射。
+///
+/// Pixiv 的真实结构是 `body.tags.tags[*]`：每项的 `tag` 是原始标签字符串，
+/// 可选的 `translation.en` 是该 tag 的译名。没有 `translation` 或 `en`
+/// 为空时只保留原 tag，不往映射里写空值。
+fn parse_pixiv_tag_payload(json: &Value) -> AppResult<(Vec<String>, HashMap<String, String>)> {
+    let tags = json
+        .pointer("/body/tags/tags")
+        .and_then(Value::as_array)
+        .ok_or_else(|| AppError::Internal("响应缺少 body.tags.tags 数组".to_string()))?;
+
+    let mut out_tags = Vec::with_capacity(tags.len());
+    let mut translations = HashMap::<String, String>::new();
+    for item in tags {
+        let tag = match item.get("tag").and_then(Value::as_str) {
+            Some(s) if !s.trim().is_empty() => s.to_string(),
+            _ => continue,
+        };
+        // translation.en 是社区译名；可能不存在 / 是空字符串 / 不是字符串。
+        // 只接收非空字符串，省得前端再判空。
+        if let Some(en) = item
+            .pointer("/translation/en")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            translations.insert(tag.clone(), en.to_string());
+        }
+        out_tags.push(tag);
+    }
+    Ok((out_tags, translations))
+}
+
 /// 单条 PID 的实际拉取实现：HTTP GET → 解析 JSON → 取 `body.tags.tags[*].tag` 与 `translation.en`。
 ///
 /// 返回 `(tags, translations)`：
@@ -328,31 +372,7 @@ pub async fn fetch_tag_for_pid(
         return Err(AppError::Internal(msg));
     }
 
-    let tags = json
-        .pointer("/body/tags/tags")
-        .and_then(Value::as_array)
-        .ok_or_else(|| AppError::Internal("响应缺少 body.tags.tags 数组".to_string()))?;
-
-    let mut out_tags = Vec::with_capacity(tags.len());
-    let mut translations = HashMap::<String, String>::new();
-    for item in tags {
-        let tag = match item.get("tag").and_then(Value::as_str) {
-            Some(s) if !s.is_empty() => s.to_string(),
-            _ => continue,
-        };
-        // translation.en 是社区译名；可能不存在 / 是空字符串 / 不是字符串。
-        // 只接收非空字符串，省得前端再判空。
-        if let Some(en) = item
-            .pointer("/translation/en")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            translations.insert(tag.clone(), en.to_string());
-        }
-        out_tags.push(tag);
-    }
-    Ok((out_tags, translations))
+    parse_pixiv_tag_payload(&json)
 }
 
 /// 单条 PID 同步拉取（给前端"重试"按钮用）。
@@ -464,6 +484,10 @@ pub async fn run_pixiv_tag_scan(
         let tx = tx.clone();
         let client = client.clone();
         let base = base.clone();
+        // 把 AppHandle + task_id 克隆给 worker 用于打日志：每条 PID 完成都要发
+        // 一行 task_log，让用户在日志面板上能看到具体哪个 PID 出错 / 成功了多少 tag。
+        let app_for_worker = app.clone();
+        let task_id_for_worker = task_id.clone();
 
         tokio::spawn(async move {
             let permit = match permit_holder.acquire_owned().await {
@@ -501,23 +525,58 @@ pub async fn run_pixiv_tag_scan(
             }
 
             let item = match fetch_tag_for_pid(&client, &base, &pid).await {
-                Ok((tags, translations)) => PixivTagPartialItem {
-                    pid: pid.clone(),
-                    tags: Some(tags),
-                    // 没有任何 en 译名时不发空 Map，省点 IPC 字节，前端按 None 兜底空对象。
-                    translations: if translations.is_empty() {
-                        None
+                Ok((tags, translations)) => {
+                    // 成功打 INFO 日志：tag 数 + 译名数。译名数 = 0 时省略尾巴，
+                    // 避免长任务里 50K 张图每条都拖一句"0 译名"显得啰嗦。
+                    let trans_n = translations.len();
+                    let msg = if trans_n > 0 {
+                        format!(
+                            "PID {} ✓ 取到 {} 个 tag（其中 {} 个有英文译名）",
+                            pid,
+                            tags.len(),
+                            trans_n
+                        )
                     } else {
-                        Some(translations)
-                    },
-                    error: None,
-                },
-                Err(e) => PixivTagPartialItem {
-                    pid: pid.clone(),
-                    tags: None,
-                    translations: None,
-                    error: Some(e.to_string()),
-                },
+                        format!("PID {} ✓ 取到 {} 个 tag", pid, tags.len())
+                    };
+                    events::emit_log(
+                        &app_for_worker,
+                        &task_id_for_worker,
+                        log_level::INFO,
+                        &msg,
+                        None,
+                    );
+                    PixivTagPartialItem {
+                        pid: pid.clone(),
+                        tags: Some(tags),
+                        // 没有任何 en 译名时不发空 Map，省点 IPC 字节，前端按 None 兜底空对象。
+                        translations: if translations.is_empty() {
+                            None
+                        } else {
+                            Some(translations)
+                        },
+                        error: None,
+                    }
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    // 失败打 WARN 日志：把 PID 和错误一起写出来，便于用户对照
+                    // 文件名定位；错误首行已经够用，多行被压成 inline。
+                    let first_line = err_msg.lines().next().unwrap_or(&err_msg).to_string();
+                    events::emit_log(
+                        &app_for_worker,
+                        &task_id_for_worker,
+                        log_level::WARN,
+                        &format!("PID {} ✗ 失败：{}", pid, first_line),
+                        None,
+                    );
+                    PixivTagPartialItem {
+                        pid: pid.clone(),
+                        tags: None,
+                        translations: None,
+                        error: Some(err_msg),
+                    }
+                }
             };
             drop(permit);
             let _ = tx.send(item).await;
@@ -560,6 +619,27 @@ pub async fn run_pixiv_tag_scan(
         flush_partial(&app, &task_id, &mut buffer, false);
     }
     events::emit_progress(&app, &task_id, stages::PIXIV_TAG, processed, total);
+    // 终态总结日志：跑完 / 取消时给出"成功 X / 失败 Y / 总计 Z"，方便用户对完
+    // 一眼判定是不是要按"重试失败"按钮。统计走"前面 worker 已发的 partial item"
+    // 的 error 字段而不是这里再次维护——但 mpsc 已关，这里靠 `processed` 总数；
+    // 如果需要精细统计，前端自己用 store 的 errorCount 显示就够了。
+    if runtime.is_cancelled() {
+        events::emit_log(
+            &app,
+            &task_id,
+            log_level::WARN,
+            &format!("Pixiv tag 拉取已取消（已处理 {} / {}）", processed, total),
+            None,
+        );
+    } else {
+        events::emit_log(
+            &app,
+            &task_id,
+            log_level::INFO,
+            &format!("Pixiv tag 拉取完成（共处理 {}）", processed),
+            None,
+        );
+    }
     finalize_done(&app, &state, &task_id, runtime.is_cancelled());
     Ok(())
 }
@@ -589,8 +669,12 @@ fn finalize_done(app: &tauri::AppHandle, state: &Arc<AppState>, task_id: &str, c
             done: true,
         },
     );
-    events::emit_state_changed(app, task_id, if cancelled { "Cancelled" } else { "Completed" });
-    state.tasks.lock().unwrap().remove(task_id);
+    events::emit_state_changed(
+        app,
+        task_id,
+        if cancelled { "Cancelled" } else { "Completed" },
+    );
+    state.remove_task(task_id);
 }
 
 /// 任务失败：发 `done = true` partial（前端能解锁 running 状态）+ 失败事件 + 清 task 表。
@@ -605,14 +689,14 @@ fn finalize_failed(app: &tauri::AppHandle, state: &Arc<AppState>, task_id: &str,
     );
     events::emit_state_changed(app, task_id, "Failed");
     events::emit_task_failed(app, task_id, message);
-    state.tasks.lock().unwrap().remove(task_id);
+    state.remove_task(task_id);
 }
 
 /// 把单张图片移动到 `<output_dir>/<sanitized_tag>/<basename>`。返回新的用户友好路径。
 ///
 /// - tag 需经 [`sanitize_filename`] 清理 Windows 非法字符；首尾留空的也会被截掉，
 ///   完全清理为空时报错（无法生成有效目录名）。
-/// - 同名冲突走 [`resolve_conflict`] 兜底（叠加 ` (N)` 后缀）。
+/// - 同名冲突走 [`resolve_conflict_with_reserved`] 兜底（叠加 ` (N)` 后缀）。
 /// - 实际移动用 [`op_pipeline::rename_or_copy_delete`]，跨卷自动 copy + delete。
 pub fn move_image_by_tag(abs_path: &str, output_dir: &str, tag: &str) -> AppResult<String> {
     let abs_path = abs_path.trim();
@@ -645,7 +729,8 @@ pub fn move_image_by_tag(abs_path: &str, output_dir: &str, tag: &str) -> AppResu
         .map_err(|e| AppError::Io(format!("创建目录失败：{e}")))?;
 
     let initial = target_dir.join(&basename);
-    let (final_path, _had_conflict) = resolve_conflict(initial);
+    let mut reserved = std::collections::HashSet::new();
+    let (final_path, _had_conflict) = resolve_conflict_with_reserved(initial, &mut reserved);
 
     op_pipeline::rename_or_copy_delete(&src, &final_path)
         .map_err(|e| AppError::Io(format!("移动失败：{e}")))?;
@@ -686,7 +771,10 @@ mod tests {
 
     #[test]
     fn extracts_first_8_or_9_digits() {
-        assert_eq!(extract_pid("144285190_p0.png"), Some("144285190".to_string()));
+        assert_eq!(
+            extract_pid("144285190_p0.png"),
+            Some("144285190".to_string())
+        );
         assert_eq!(extract_pid("99349202.jpg"), Some("99349202".to_string()));
         assert_eq!(
             extract_pid("2025_99349202_p0.png"),
@@ -706,6 +794,50 @@ mod tests {
             build_request_url("https://www.pixiv.net/ajax/illust", "12345678"),
             "https://www.pixiv.net/ajax/illust/12345678"
         );
+    }
+
+    #[test]
+    fn parses_translation_en_from_pixiv_payload() {
+        let json = serde_json::json!({
+            "error": false,
+            "body": {
+                "tags": {
+                    "tags": [
+                        {
+                            "tag": "コイカツ",
+                            "translation": { "en": "恋活" }
+                        },
+                        {
+                            "tag": "キャラ配布(コイカツ)",
+                            "translation": { "en": "人物卡（恋活）" }
+                        },
+                        {
+                            "tag": "Koikatsu"
+                        }
+                    ]
+                }
+            }
+        });
+
+        let (tags, translations) = parse_pixiv_tag_payload(&json).unwrap();
+
+        assert_eq!(
+            tags,
+            vec![
+                "コイカツ".to_string(),
+                "キャラ配布(コイカツ)".to_string(),
+                "Koikatsu".to_string(),
+            ]
+        );
+        assert_eq!(
+            translations.get("キャラ配布(コイカツ)").map(String::as_str),
+            Some("人物卡（恋活）")
+        );
+        assert_eq!(
+            translations.get("コイカツ").map(String::as_str),
+            Some("恋活")
+        );
+        assert!(!translations.contains_key("Koikatsu"));
     }
 
     #[test]

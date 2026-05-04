@@ -32,7 +32,6 @@ use std::{
     sync::Arc,
 };
 
-use chrono::Local;
 use uuid::Uuid;
 use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
@@ -213,7 +212,7 @@ pub fn apply_mod_modify_version(
         }
     };
 
-    let name = record_name.unwrap_or_else(|| Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+    let name = op_pipeline::record_name_or_timestamp(record_name);
 
     op_pipeline::persist_apply_with_executor(
         db_path,

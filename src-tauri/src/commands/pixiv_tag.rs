@@ -5,12 +5,11 @@
 use std::sync::Arc;
 
 use tauri::{AppHandle, State};
-use uuid::Uuid;
 
 use crate::{
-    app_state::{AppState, TaskRuntime},
+    app_state::AppState,
     models::{PixivImageRow, PixivTagFetchResult},
-    services::{events, pixiv_tag},
+    services::pixiv_tag,
 };
 
 /// 同步扫描任务输入目录，返回所有可识别 PID 的图片候选。
@@ -25,7 +24,7 @@ pub fn scan_pixiv_image_candidates(paths: Vec<String>) -> Result<Vec<PixivImageR
 /// 启动 Pixiv tag 拉取长任务，返回 `task_id`。
 ///
 /// 取消通过共享的 [`crate::commands::runtime::stop_task`] 完成。
-/// 终态（成功 / 失败 / 取消）会从 `AppState.tasks` 移除自身。
+/// 终态（成功 / 失败 / 取消）会通过 `AppState::remove_task` 清理自身。
 #[tauri::command]
 pub async fn start_pixiv_tag_scan_task(
     app: AppHandle,
@@ -33,9 +32,7 @@ pub async fn start_pixiv_tag_scan_task(
     pids: Vec<String>,
     task_id: Option<String>,
 ) -> Result<String, String> {
-    let task_id = task_id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let runtime = Arc::new(TaskRuntime::new());
-    state.insert_task(task_id.clone(), runtime.clone());
+    let (task_id, runtime) = state.create_task(task_id);
 
     let state_clone = state.inner().clone();
     let app_clone = app.clone();
@@ -51,13 +48,7 @@ pub async fn start_pixiv_tag_scan_task(
         )
         .await;
 
-        // 业务侧已经处理了终态发事件 + 移除任务的逻辑；
-        // 这里只在 Result::Err 路径上补一条 task_failed 兜底，
-        // 防止业务实现遗漏。
-        if let Err(err) = result {
-            let msg = err.to_string();
-            events::emit_task_failed(&app_clone, &task_id_clone, &msg);
-        }
+        let _ = result;
     });
 
     Ok(task_id)

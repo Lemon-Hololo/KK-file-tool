@@ -14,7 +14,9 @@ use crate::{
     services::{
         events,
         logging::TaskLogContext,
-        op_pipeline::{resolve_io_concurrency_multiplier, resolve_thread_count},
+        op_pipeline::{
+            record_name_or_timestamp, resolve_io_concurrency_multiplier, resolve_thread_count,
+        },
     },
     utils::hash::hash_file_blake3,
     utils::path::{to_extended_length_path, to_user_friendly_path},
@@ -56,7 +58,7 @@ async fn pause_point(runtime: &TaskRuntime) {
 /// 会跑完，不再提交新任务）。
 ///
 /// # 任务清理
-/// 不论成功 / 失败 / 取消，都会在 `AppState.tasks` 中移除自身条目，
+/// 不论成功 / 失败 / 取消，都会通过 `AppState::remove_task` 移除自身条目，
 /// 与 `mod_tools::scan` / `cleanup` 行为一致。
 pub async fn run_dedup(
     app: AppHandle,
@@ -77,7 +79,7 @@ pub async fn run_dedup(
     .await;
 
     // 任务终态清理：从 tasks 表移除，避免 HashMap 单调增长。
-    app_state.tasks.lock().unwrap().remove(&task_id);
+    app_state.remove_task(&task_id);
 
     result
 }
@@ -440,10 +442,7 @@ async fn run_dedup_inner(
         events::emit_result_partial(&app, &task_id, &partial_buf, false);
     }
 
-    {
-        let mut lock = app_state.task_results.lock().unwrap();
-        lock.insert(task_id.clone(), groups.clone());
-    }
+    app_state.set_task_results(task_id.clone(), groups.clone());
 
     if runtime.is_cancelled() {
         runtime.set_status(TaskStatus::Cancelled);
@@ -464,10 +463,7 @@ async fn run_dedup_inner(
             })
             .collect();
 
-        let name = config
-            .record_name
-            .clone()
-            .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d_%H-%M-%S").to_string());
+        let name = record_name_or_timestamp(config.record_name.clone());
 
         match hash_repo::insert_hash_record(
             &app_state.db_path,

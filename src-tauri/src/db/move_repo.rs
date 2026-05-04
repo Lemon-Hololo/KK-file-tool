@@ -2,16 +2,9 @@
 
 use std::path::Path;
 
-use rusqlite::{params, Connection};
+use rusqlite::params;
 
-use crate::{
-    error::{AppError, AppResult},
-    models::MoveReport,
-};
-
-fn conn(db_path: &Path) -> AppResult<Connection> {
-    Connection::open(db_path).map_err(|e| AppError::Db(e.to_string()))
-}
+use crate::{db::open_connection, error::AppResult, models::MoveReport};
 
 /// 事务：写入移动报告 + 所有 item + 清理被成功移动文件对应的 `hash_entries`。
 ///
@@ -22,7 +15,7 @@ pub fn save_move_report_and_cleanup_entries(
     report: &MoveReport,
     moved_paths: &[String],
 ) -> AppResult<()> {
-    let mut conn = conn(db_path)?;
+    let mut conn = open_connection(db_path)?;
     let tx = conn.transaction()?;
 
     tx.execute(
