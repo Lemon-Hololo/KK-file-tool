@@ -40,13 +40,13 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useStorage } from "@vueuse/core";
 import { ElMessage } from "element-plus";
-import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Folder, RefreshRight } from "@element-plus/icons-vue";
 
 import { usePixivTagStore } from "../stores/pixivTag";
 import { useConfigStore } from "../stores/config";
 import { stripWindowsExtendedPrefix } from "../utils/path";
+import { pickFolder } from "../composables/useFolderPicker";
 import { DEFAULT_EXTREME_ROW_THRESHOLD, EXTREME_OVERSCAN, NORMAL_OVERSCAN } from "../constants/task";
 import type { PixivImageState, PixivTranslationOverride } from "../types/pixivTag";
 import type { VirtualColumn } from "../types/virtualTable";
@@ -221,18 +221,8 @@ const overrideOptions: { label: string; value: PixivTranslationOverride; tip: st
 ];
 
 async function pickOutputDir() {
-  try {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "选择输出目录"
-    });
-    if (typeof selected === "string" && selected) {
-      store.outputDir = selected;
-    }
-  } catch (e) {
-    ElMessage.error(`打开目录选择失败：${String(e)}`);
-  }
+  const selected = await pickFolder("选择输出目录");
+  if (selected) store.outputDir = selected;
 }
 
 async function startScan() {

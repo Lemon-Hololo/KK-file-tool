@@ -10,6 +10,7 @@ import { ref, watch } from "vue";
 import { useStorage } from "@vueuse/core";
 import type { DuplicateGroup, FileEntry } from "../types/task";
 import { formatTimestamp, formatBytes } from "../utils/format";
+import { baseName } from "../utils/path";
 import PathPreviewLink from "./PathPreviewLink.vue";
 
 const props = defineProps<{
@@ -49,11 +50,6 @@ function getVisibleFiles(group: DuplicateGroup) {
 function hasMore(group: DuplicateGroup) {
   const limit = renderLimits.value[group.groupId] || group.files.length;
   return group.files.length > limit;
-}
-
-function baseName(path: string) {
-  const parts = path.split(/[\\/]/);
-  return parts[parts.length - 1] || path;
 }
 
 function getKeepFileName(group: DuplicateGroup) {

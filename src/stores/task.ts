@@ -8,7 +8,7 @@
 import { defineStore } from "pinia";
 import { onEvent } from "../services/tauri";
 import { startDedupTask, applyMoveAction } from "../services/task";
-import { mapGroup } from "../utils/mapper";
+import { upsertGroupsByKey } from "../utils/groupUpsert";
 import type { DedupConfig, DuplicateGroup } from "../types/task";
 import type { MoveActionResponse, MoveReport } from "../types/moveReport";
 import { useRuntimeStore } from "./runtime";
@@ -38,9 +38,7 @@ export const useTaskStore = defineStore("task", {
 
   actions: {
     upsertGroups(incoming: DuplicateGroup[]) {
-      const map = new Map(this.resultGroups.map((g) => [g.groupId, g]));
-      for (const g of incoming) map.set(g.groupId, g);
-      this.resultGroups = Array.from(map.values()).sort((a, b) => a.groupId.localeCompare(b.groupId));
+      this.resultGroups = upsertGroupsByKey(this.resultGroups, incoming);
     },
 
     async initEvents() {
@@ -49,28 +47,33 @@ export const useTaskStore = defineStore("task", {
 
       const runtimeStore = useRuntimeStore();
 
-      await onEvent<any>("task_result_partial", (payload) => {
-        if (runtimeStore.taskId && payload?.taskId !== runtimeStore.taskId) return;
-        const groups = (payload?.groups || []).map((x: any) => mapGroup(x));
-        this.upsertGroups(groups);
-      });
+      await onEvent<{ taskId: string; groups: DuplicateGroup[]; done?: boolean }>(
+        "task_result_partial",
+        (payload) => {
+          if (runtimeStore.taskId && payload?.taskId !== runtimeStore.taskId) return;
+          this.upsertGroups(payload?.groups ?? []);
+        }
+      );
 
-      await onEvent<any>("task_completed", (payload) => {
+      await onEvent<{ taskId: string; groups: DuplicateGroup[] }>("task_completed", (payload) => {
         if (runtimeStore.taskId && payload?.taskId !== runtimeStore.taskId) return;
-        this.resultGroups = (payload?.groups || []).map((x: any) => mapGroup(x));
+        this.resultGroups = payload?.groups ?? [];
         // 任务完成后刷新历史记录列表
         const recordStore = useRecordStore();
         recordStore.refresh();
       });
 
-      await onEvent<any>("move_report_ready", (payload) => {
-        if (runtimeStore.taskId && payload?.taskId !== runtimeStore.taskId) return;
-        this.latestMoveReport = payload.report as MoveReport;
-        this.resultGroups = (payload.updatedGroups || []).map((x: any) => mapGroup(x));
-        // 移动完成后刷新历史记录列表
-        const recordStore = useRecordStore();
-        recordStore.refresh();
-      });
+      await onEvent<{ taskId: string; report: MoveReport; updatedGroups: DuplicateGroup[] }>(
+        "move_report_ready",
+        (payload) => {
+          if (runtimeStore.taskId && payload?.taskId !== runtimeStore.taskId) return;
+          this.latestMoveReport = payload.report;
+          this.resultGroups = payload.updatedGroups ?? [];
+          // 移动完成后刷新历史记录列表
+          const recordStore = useRecordStore();
+          recordStore.refresh();
+        }
+      );
     },
 
     async start(paths: string[], config: DedupConfig) {
@@ -89,7 +92,7 @@ export const useTaskStore = defineStore("task", {
 
       const resp = await applyMoveAction(runtimeStore.taskId, selectedFiles, moveTargetPath || null);
       this.latestMoveReport = resp.report;
-      this.resultGroups = (resp.updatedGroups || []).map((x: any) => mapGroup(x));
+      this.resultGroups = resp.updatedGroups ?? [];
       return resp as MoveActionResponse;
     }
   }

@@ -11,7 +11,7 @@
 import { ref, watch, nextTick, computed, onBeforeUnmount } from "vue";
 import { useStorage } from "@vueuse/core";
 import type { TaskLogPayload } from "../types/common";
-import { stripWindowsExtendedPrefix } from "../utils/path";
+import { stripWindowsExtendedPrefix, baseName } from "../utils/path";
 import { DEFAULT_LOG_MAX_LENGTH } from "../constants/app";
 import { useConfigStore } from "../stores/config";
 import Panel from "./common/Panel.vue";
@@ -140,13 +140,6 @@ function levelClass(level: string) {
   if (level === "ERROR") return "lvl-error";
   if (level === "WARN") return "lvl-warn";
   return "lvl-info";
-}
-
-function baseName(p: string): string {
-  if (!p) return p;
-  const stripped = stripWindowsExtendedPrefix(p);
-  const parts = stripped.split(/[\\/]/);
-  return parts[parts.length - 1] || stripped;
 }
 
 function displayText(item: TaskLogPayload) {

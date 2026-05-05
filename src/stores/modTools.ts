@@ -5,6 +5,10 @@
  * - 重命名 / 归类 / 重复删除 / 旧版本删除：preview / apply / rollback 流水线；
  * - 扫描：长任务，通过 `task_id` 关联事件，完成时由 `mod_scan_completed`
  *   事件刷新 `scan` 子状态。
+ *
+ * 记录 CRUD（list/detail/delete/rename/rollback/...）由
+ * [_opRecordCrud.ts](_opRecordCrud.ts) 工厂统一生成。长任务启动逻辑共用
+ * [`useLocalLongTask`](../composables/useLocalLongTask.ts)。
  */
 
 import { defineStore } from "pinia";
@@ -46,8 +50,12 @@ import {
   startModVersionTask
 } from "../services/modTools";
 import { stopTask } from "../services/task";
+import { runLocalLongTask } from "../composables/useLocalLongTask";
+import { createLocalTaskId } from "../utils/taskId";
+import { upsertGroupsByKey } from "../utils/groupUpsert";
 import { useConfigStore } from "./config";
 import { useRuntimeStore } from "./runtime";
+import { createOpRecordCrudActionsWithRename } from "./_opRecordCrud";
 
 interface ScanState {
   taskId: string | null;
@@ -74,6 +82,15 @@ interface GroupCheckState {
 
 let pendingDuplicateGroups = new Map<string, ModDuplicateGroup>();
 let pendingVersionGroups = new Map<string, ModVersionGroup>();
+
+const crud = createOpRecordCrudActionsWithRename<ModOpRecordSummary, ModOpRecordDetail>({
+  list: listModOpRecords,
+  loadDetail: getModOpRecordDetail,
+  remove: deleteModOpRecord,
+  rename: renameModOpRecord,
+  checkRollback: checkModOpRollback,
+  rollback: rollbackModOp
+});
 
 export const useModToolsStore = defineStore("modTools", {
   state: () => ({
@@ -117,16 +134,14 @@ export const useModToolsStore = defineStore("modTools", {
   }),
 
   actions: {
+    ...crud,
+
     upsertDuplicateGroups(incoming: ModDuplicateGroup[]) {
-      const map = new Map(this.duplicateGroups.map((group) => [group.groupId, group]));
-      for (const group of incoming) map.set(group.groupId, group);
-      this.duplicateGroups = Array.from(map.values()).sort((a, b) => a.groupId.localeCompare(b.groupId));
+      this.duplicateGroups = upsertGroupsByKey(this.duplicateGroups, incoming);
     },
 
     upsertVersionGroups(incoming: ModVersionGroup[]) {
-      const map = new Map(this.versionGroups.map((group) => [group.groupId, group]));
-      for (const group of incoming) map.set(group.groupId, group);
-      this.versionGroups = Array.from(map.values()).sort((a, b) => a.groupId.localeCompare(b.groupId));
+      this.versionGroups = upsertGroupsByKey(this.versionGroups, incoming);
     },
 
     async previewRename(paths: string[]) {
@@ -170,28 +185,22 @@ export const useModToolsStore = defineStore("modTools", {
     /** 按 `guid + author + version` 查找重复 MOD；默认保留策略跟随配置中心。 */
     async previewDuplicates(paths: string[]) {
       await this.initDuplicateEvents();
-      const runtimeStore = useRuntimeStore();
-      const taskId = createLocalTaskId("mod-duplicates");
-      this.duplicateApplyResult = null;
-      this.duplicateGroups = [];
-      pendingDuplicateGroups = new Map();
+      const taskId = await runLocalLongTask({
+        prefix: "mod-duplicates",
+        startMessage: "开始检查重复 MOD",
+        beforeStart: () => {
+          this.duplicateApplyResult = null;
+          this.duplicateGroups = [];
+          pendingDuplicateGroups = new Map();
+        },
+        setBusy: (v) => {
+          this.busy.duplicates = v;
+          this.duplicateCheck.running = v;
+          if (!v) this.duplicateCheck.taskId = null;
+        },
+        start: (id) => startModDuplicateTask(paths, id)
+      });
       this.duplicateCheck.taskId = taskId;
-      this.duplicateCheck.running = true;
-      this.busy.duplicates = true;
-      runtimeStore.setRunningTask(taskId);
-      runtimeStore.appendLocalLog(taskId, "INFO", "开始检查重复 MOD");
-      try {
-        await startModDuplicateTask(paths, taskId);
-      } catch (error) {
-        this.busy.duplicates = false;
-        this.duplicateCheck.running = false;
-        this.duplicateCheck.taskId = null;
-        runtimeStore.failLocalTask(
-          taskId,
-          error instanceof Error ? error.message : String(error)
-        );
-        throw error;
-      }
     },
 
     /** 删除重复 MOD 中选中的文件，并缓存可撤回记录结果。 */
@@ -226,28 +235,22 @@ export const useModToolsStore = defineStore("modTools", {
     /** 按 `guid + author` 查找不同版本 MOD；默认保留策略跟随配置中心。 */
     async previewVersions(paths: string[]) {
       await this.initVersionEvents();
-      const runtimeStore = useRuntimeStore();
-      const taskId = createLocalTaskId("mod-versions");
-      this.versionApplyResult = null;
-      this.versionGroups = [];
-      pendingVersionGroups = new Map();
+      const taskId = await runLocalLongTask({
+        prefix: "mod-versions",
+        startMessage: "开始检查不同版本 MOD",
+        beforeStart: () => {
+          this.versionApplyResult = null;
+          this.versionGroups = [];
+          pendingVersionGroups = new Map();
+        },
+        setBusy: (v) => {
+          this.busy.versions = v;
+          this.versionCheck.running = v;
+          if (!v) this.versionCheck.taskId = null;
+        },
+        start: (id) => startModVersionTask(paths, id)
+      });
       this.versionCheck.taskId = taskId;
-      this.versionCheck.running = true;
-      this.busy.versions = true;
-      runtimeStore.setRunningTask(taskId);
-      runtimeStore.appendLocalLog(taskId, "INFO", "开始检查不同版本 MOD");
-      try {
-        await startModVersionTask(paths, taskId);
-      } catch (error) {
-        this.busy.versions = false;
-        this.versionCheck.running = false;
-        this.versionCheck.taskId = null;
-        runtimeStore.failLocalTask(
-          taskId,
-          error instanceof Error ? error.message : String(error)
-        );
-        throw error;
-      }
     },
 
     /** 删除不同版本 MOD 中选中的文件，并缓存可撤回记录结果。 */
@@ -277,49 +280,6 @@ export const useModToolsStore = defineStore("modTools", {
           .filter((group) => new Set(group.files.map((file) => file.version)).size > 1);
         return result;
       });
-    },
-
-    async refreshRecords(kind?: string | null) {
-      this.records = await listModOpRecords(kind);
-    },
-
-    async loadDetail(recordId: string) {
-      this.currentDetail = await getModOpRecordDetail(recordId);
-      return this.currentDetail;
-    },
-
-    checkRollback(recordId: string, itemIds?: number[] | null) {
-      return checkModOpRollback(recordId, itemIds);
-    },
-
-    rollback(recordId: string, itemIds?: number[] | null, forceIgnoreMissing = false) {
-      return rollbackModOp(recordId, itemIds, forceIgnoreMissing);
-    },
-
-    async remove(recordId: string) {
-      await deleteModOpRecord(recordId);
-      await this.refreshRecords();
-      if (this.currentDetail?.summary.recordId === recordId) {
-        this.currentDetail = null;
-      }
-    },
-
-    async removeBatch(recordIds: string[]) {
-      for (const id of recordIds) {
-        await deleteModOpRecord(id);
-      }
-      await this.refreshRecords();
-      if (this.currentDetail && recordIds.includes(this.currentDetail.summary.recordId)) {
-        this.currentDetail = null;
-      }
-    },
-
-    async rename(recordId: string, newName: string) {
-      await renameModOpRecord(recordId, newName);
-      await this.refreshRecords();
-      if (this.currentDetail?.summary.recordId === recordId) {
-        this.currentDetail.summary.recordName = newName;
-      }
     },
 
     async initScanEvents() {
@@ -374,28 +334,25 @@ export const useModToolsStore = defineStore("modTools", {
 
     async startScan(paths: string[], keyword: string) {
       await this.initScanEvents();
-      const runtimeStore = useRuntimeStore();
-      const taskId = createLocalTaskId("mod-scan");
       this.scan.keyword = keyword;
       this.scan.matches = [];
       this.scan.totalScanned = 0;
       this.scan.totalErrors = 0;
       this.scan.cancelled = false;
       this.scan.running = true;
-      runtimeStore.setRunningTask(taskId);
-      runtimeStore.appendLocalLog(taskId, "INFO", `开始扫描版本限制，关键字: ${keyword}`);
-      try {
-        this.scan.taskId = await startModScanTask(paths, keyword, taskId);
-        return this.scan.taskId;
-      } catch (error) {
-        this.scan.running = false;
-        this.scan.taskId = null;
-        runtimeStore.failLocalTask(
-          taskId,
-          error instanceof Error ? error.message : String(error)
-        );
-        throw error;
-      }
+      const taskId = await runLocalLongTask({
+        prefix: "mod-scan",
+        startMessage: `开始扫描版本限制，关键字: ${keyword}`,
+        setBusy: (v) => {
+          this.scan.running = v;
+          if (!v) this.scan.taskId = null;
+        },
+        start: async (id) => {
+          this.scan.taskId = await startModScanTask(paths, keyword, id);
+        }
+      });
+      // start 内部已经把 scan.taskId 写成后端返回的 ID（与 runLocalLongTask 生成的相同）
+      return this.scan.taskId ?? taskId;
     },
 
     async stopScan() {
@@ -440,13 +397,10 @@ export const useModToolsStore = defineStore("modTools", {
 
 type BusyKey = keyof BusyState;
 
-function createLocalTaskId(prefix: string): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
+/**
+ * 同步类（preview / apply）短任务的本地包装：与 useLocalLongTask 的区别是
+ * 终态由 await 返回决定 —— 任务跑完直接 finishLocalTask，不依赖后端事件。
+ */
 async function runWithLocalTask<T>(
   busyState: BusyState,
   key: BusyKey,

@@ -95,14 +95,16 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 │   │   ├── EmptyDirsPanel.vue           # 薄包装 → OpsPanel
 │   │   ├── ModRenamePanel.vue           # 薄包装 → OpsPanel
 │   │   ├── ModOrganizePanel.vue         # 薄包装 → OpsPanel
-│   │   ├── ModDuplicatePanel.vue        # 重复 MOD 分组 + 删除（写 Mod 操作记录）
-│   │   ├── ModVersionPanel.vue          # 不同版本 MOD 分组 + 删除（写 Mod 操作记录）
+│   │   ├── ModDuplicatePanel.vue        # 薄包装 → ModGroupPanel(kind=duplicate)
+│   │   ├── ModVersionPanel.vue          # 薄包装 → ModGroupPanel(kind=version)
+│   │   ├── ModGroupPanel.vue            # 重复/不同版本 MOD 分组检查共用面板
 │   │   ├── ModScanPanel.vue             # 扫描 + 勾选 + modify
 │   │   ├── ModToolsPanel.vue            # 五个 Mod 子 Tab 容器（TabBar + v-show）
 │   │   ├── PixivTagPanel.vue            # Pixiv 标签整理（动态 tag 列 + 单元格点击移动）
 │   │   ├── RealtimeLogPanel.vue         # 手写虚拟滚动日志
 │   │   ├── DuplicateGroupTable.vue
 │   │   ├── PreviewPanel.vue / PathPreviewLink.vue / MoveConfirmDialog.vue / MoveReportDialog.vue
+│   │   ├── RecordTab.vue                # 记录管理页通用 tab（列表 + 详情 + 撤回 + 批删）
 │   │   ├── RecordDetailDrawer.vue / TaskControlPanel.vue
 │   │   └── common/
 │   │       ├── Panel.vue                # 自有卡片原语，替代 el-card
@@ -111,7 +113,8 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 │   │       └── OpsPanel.vue             # 通用"预览→应用→撤回"面板
 │   ├── stores/                          # Pinia Options-style
 │   │   └── runtime.ts / task.ts / record.ts / config.ts / preview.ts /
-│   │       suffix.ts / emptyDirs.ts / modTools.ts / pixivTag.ts
+│   │       suffix.ts / emptyDirs.ts / modTools.ts / pixivTag.ts /
+│   │       _opRecordCrud.ts             # 通用可撤回记录 CRUD action 工厂
 │   ├── services/                        # IPC 封装
 │   │   └── tauri.ts / task.ts / settings.ts / record.ts / preview.ts /
 │   │       suffix.ts / emptyDirs.ts / modTools.ts / pixivTag.ts
@@ -122,13 +125,17 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 │   │   └── suffix.ts / emptyDirs.ts / modTools.ts / pixivTag.ts
 │   ├── composables/
 │   │   ├── useTheme.ts                  # 主题切换
-│   │   └── usePathNormalize.ts          # 路径规范化 + 警告弹窗
+│   │   ├── usePathNormalize.ts          # 路径规范化 + 警告弹窗
+│   │   ├── useFolderPicker.ts           # 系统目录选择弹窗封装
+│   │   ├── useDangerConfirm.ts          # 缺失路径 / 危险操作确认文案封装
+│   │   └── useLocalLongTask.ts          # 前端预生成 task_id 的长任务启动封装
 │   ├── utils/
-│   │   ├── path.ts                      # uniquePaths / stripWindowsExtendedPrefix
+│   │   ├── path.ts                      # uniquePaths / stripWindowsExtendedPrefix / baseName
 │   │   ├── format.ts / error.ts / clipboard.ts
-│   │   └── mapper.ts                    # dedup 分组前端包装透传
+│   │   ├── groupUpsert.ts               # groupId 增量合并 + 排序
+│   │   └── taskId.ts                    # 前端本地 task_id 生成
 │   └── constants/
-│       └── app.ts / task.ts / theme.ts / preview.ts
+│       └── app.ts / task.ts / theme.ts / preview.ts / recordColumns.ts
 │
 ├── src-tauri/src/                       # 后端
 │   ├── main.rs / lib.rs                 # 入口 + 命令注册
@@ -230,6 +237,8 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 
 **`types/opRecord.ts`** 提供 `OpApplyItem` / `OpApplyResponse` / `OpRecordSummary<Extra>` / `OpRecordItem` / `OpRecordDetail<Extra>` / `OpRollbackCheck` / `OpRollbackResponse`。基础类型都包含 `rollbackEnabled: boolean`，业务可继续用泛型扩展（如 `SuffixRecordSummary = OpRecordSummary<{ targetSuffix }>`、`ModOpRecordSummary = OpRecordSummary<{ kind: ... }>`）。
 
+**`stores/_opRecordCrud.ts`** 提供 `createOpRecordCrudActions` / `createOpRecordCrudActionsWithRename` 两个 action 工厂，统一生成记录型 store 的 `refreshRecords / loadDetail / checkRollback / rollback / remove / removeBatch`，以及可选 `rename`。`suffix.ts` / `emptyDirs.ts` / `modTools.ts` 都通过 spread 工厂拿这些 CRUD action，只保留 preview/apply/scan 等业务专属逻辑。新增记录型业务时不要再手抄这些 action；如果该记录支持重命名，用 `createOpRecordCrudActionsWithRename`，否则用 `createOpRecordCrudActions`。
+
 **`components/common/OpsPanel.vue`** 泛型面板，props：
 - `paths` / `ensureNormalizedPaths`：路径规范化
 - `columns` / `rows` / `rowKey`：VirtualTable 配置
@@ -239,6 +248,10 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 - `#topForm` 插槽放业务专属表单（如"目标后缀"输入）
 
 `SuffixPanel` / `ModRenamePanel` / `ModOrganizePanel` / `EmptyDirsPanel` 都是 **< 100 行** 的薄包装，只定义列 + rows computed + 四个回调。
+
+**`components/RecordTab.vue`** 是记录管理页的通用 tab：负责搜索、批量删除、VirtualTable 列表、详情抽屉、撤回按钮与缺失路径确认；业务差异通过 `listColumns / detailColumns / searchableFields / extraFilter / #extraDescription / #rowActions` 注入。`RecordManagePage.vue` 中后缀 / 空文件夹 / Mod 三类记录都必须走 RecordTab；哈希记录因有"应用记录"与独立详情结构仍保留独立模板。
+
+**`components/ModGroupPanel.vue`** 是重复 MOD / 不同版本 MOD 的共用分组检查面板。`ModDuplicatePanel.vue` 与 `ModVersionPanel.vue` 只做 `kind="duplicate" | "version"` 的薄包装；保留按钮、collapse 分组、删除选中、撤回本次等交互都在 ModGroupPanel 中维护。新增类似"按某个 manifest 维度分组 → 删除选中 → 写 Mod 记录"的面板时优先扩展 ModGroupPanel，不要复制两份分组表模板。
 
 **`ModScanPanel` 不走 OpsPanel**——"扫描"是长任务（绑定 `task_id` 事件），但其"修改选中"按钮调 `store.applyModifyVersion`，最终仍走 `op_pipeline::persist_apply_with_executor` 写入 `mod_op_records` 表。
 
@@ -288,11 +301,11 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 
 ### 长任务 task_id 约定
 
-`start_dedup_task`、`start_pixiv_tag_scan_task` 与 Mod 各类长任务（`start_mod_scan_task` / `start_mod_duplicate_task` / `start_mod_version_task`）都接受可选 `taskId`——前端预生成 ID 并先开始监听，避免事件早于监听器到达造成丢失。命令层统一用 `AppState::create_task(taskId)` 创建并注册 `(task_id, TaskRuntime)`；终态收尾统一用 `AppState::remove_task(task_id)`，不要在命令 / service 里直接操作 `state.tasks` 的锁。暂停 / 恢复 / 取消统一走 `TaskRuntime::pause` / `resume` / `cancel`，任务循环只读 `is_paused` / `is_cancelled`。去重结果缓存也由 `AppState::set_task_results` / `update_task_results` / `clear_task_results` 管理，外部不直接锁 `task_results`。Mod 同步命令（重命名 / 归类 / modify）也接受可选 `taskId` 用来发 `task_log`。
+`start_dedup_task`、`start_pixiv_tag_scan_task` 与 Mod 各类长任务（`start_mod_scan_task` / `start_mod_duplicate_task` / `start_mod_version_task`）都接受可选 `taskId`——前端预生成 ID 并先开始监听，避免事件早于监听器到达造成丢失。前端本地 ID 统一用 `utils/taskId.ts::createLocalTaskId`；Mod / Pixiv 这类"前端预生成 ID → 后端事件终态"的长任务启动统一走 `composables/useLocalLongTask.ts::runLocalLongTask`，不要在 store 里再手写 taskId / runtime log / 失败兜底三件套。命令层统一用 `AppState::create_task(taskId)` 创建并注册 `(task_id, TaskRuntime)`；终态收尾统一用 `AppState::remove_task(task_id)`，不要在命令 / service 里直接操作 `state.tasks` 的锁。暂停 / 恢复 / 取消统一走 `TaskRuntime::pause` / `resume` / `cancel`，任务循环只读 `is_paused` / `is_cancelled`。去重结果缓存也由 `AppState::set_task_results` / `update_task_results` / `clear_task_results` 管理，外部不直接锁 `task_results`。Mod 同步命令（重命名 / 归类 / modify）也接受可选 `taskId` 用来发 `task_log`。
 
 ### 重复 / 版本检查的扫描流程
 
-只走一次 WalkDir：先收集候选 PathBuf 列表，用 `len()` 作为进度 total；第二阶段分块（chunk = 256）并行解析 manifest，每个 chunk 处理完通过 `mod_duplicate_partial` / `mod_version_partial` 增量下发，避免一次性大响应。两类扫描的差异（分组 key、"成立"判定、partial event 类型、完成日志文案）抽成 `GroupSpec` trait（`DuplicateSpec` / `VersionSpec`），同步预览（`preview_grouped`）和长任务（`run_grouped_scan`）都共享同一份骨架——添加新分组维度时实现 trait 即可，不再复制 200+ 行扫描循环。`apply_mod_delete`（重复 / 版本删除）日志输出走"一行总结 + 抽样 5 条 + 余 N 条略"模板，避免 1w 选择刷屏；详情仍可在记录详情页查看。
+只走一次 WalkDir：先收集候选 PathBuf 列表，用 `len()` 作为进度 total；第二阶段分块（chunk = 256）并行解析 manifest，每个 chunk 处理完通过 `mod_duplicate_partial` / `mod_version_partial` 增量下发，避免一次性大响应。两类扫描的差异（分组 key、"成立"判定、partial event 类型、完成日志文案）抽成 `GroupSpec` trait（`DuplicateSpec` / `VersionSpec`），同步预览（`preview_grouped`）和长任务（`run_grouped_scan`）都共享同一份骨架——添加新分组维度时实现 trait 即可，不再复制 200+ 行扫描循环。前端展示对应收敛到 `ModGroupPanel.vue`，`ModDuplicatePanel.vue` / `ModVersionPanel.vue` 只是 `kind` 薄包装；添加新分组维度时优先扩展这套 kind 配置，不再复制 collapse + el-table 面板模板。`apply_mod_delete`（重复 / 版本删除）日志输出走"一行总结 + 抽样 5 条 + 余 N 条略"模板，避免 1w 选择刷屏；详情仍可在记录详情页查看。
 
 新增命令的步骤：写 `commands/<mod>.rs` → `lib.rs::invoke_handler!` 注册 → 前端 `services/<feature>.ts` 封装 → `types/<feature>.ts` 同步类型。
 
@@ -476,7 +489,7 @@ Mod 各面板（Rename / Organize / Duplicate / Version / Scan）与去重分组
 
 1. **前后端模型同步**：改 `models/*.rs` 必须同步改 `types/*.ts`，字段驼峰对齐。
 2. **命令注册**：新 `#[tauri::command]` 必须在 `lib.rs::invoke_handler!` 注册并写前端 service。
-3. **记录型操作**：走 `op_record_repo + op_pipeline + OpsPanel`，不要复制 suffix / mod_tools 当模板。非纯 rename 用 `persist_apply_with_executor`，item 记 `old_path = 原始, new_path = 备份`。
+3. **记录型操作**：后端走 `op_record_repo + op_pipeline`，任务面板走 `OpsPanel` 薄包装，记录管理页走 `RecordTab`，前端 store 用 `stores/_opRecordCrud.ts` 的工厂生成通用 CRUD action。非纯 rename 用 `persist_apply_with_executor`，item 记 `old_path = 原始, new_path = 备份`。
 4. **数据库迁移**：只允许 `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ... ADD COLUMN`，不改已有列。迁移写在 `schema.rs::init_schema` 末尾。
 5. **IPC 事件**：新事件登记 `constants.rs::events`，写 `services/events.rs` emit 函数，在前端 store 的 `initEvents` 监听。长任务 spawn 失败兜底统一调 `events::finalize_failed_long_task(app, state, task_id, err)`：发 `task_state_changed=Failed` + `task_failed` 事件 + `state.remove_task`。partial done 信号需要业务侧自行先发（不同任务 payload 不同），再调本 helper。**禁止在每个命令模块再抄一份 emit_state_changed + emit_task_failed + remove_task 三件套**。命令层启动长任务统一走 `events::spawn_long_task(app, state, task_id, make_future, on_failure_extra)`：克隆 `state/app/task_id` 给 spawn 闭包、把业务 future 喂进去、失败时先调 `on_failure_extra`（用来发本业务的 partial done）再走 `finalize_failed_long_task`。dedup / mod_scan / mod_duplicate / mod_version 四个长任务都走这套；pixiv 是例外——它内部已经统一终态收尾（`finalize_done`/`finalize_failed`），命令层只 spawn 不做兜底，否则失败会发两次 `Failed`。
 6. **路径**：`std::fs` 入参一律 `to_extended_length_path`；返回前端的路径一律 `to_user_friendly_path`。
@@ -535,5 +548,5 @@ Mod 各面板（Rename / Organize / Duplicate / Version / Scan）与去重分组
 
 ### 非配置常量（编译期硬编码）
 
-- 前端：`src/constants/app.ts`（`DEFAULT_LOG_MAX_LENGTH` 兜底、`LOG_FLUSH_INTERVAL`）、`task.ts`（`DEFAULT_EXTREME_ROW_THRESHOLD` 兜底 / `EXTREME_OVERSCAN` / `NORMAL_OVERSCAN` / 分组分页与渲染步长）、`theme.ts`、`preview.ts`。
+- 前端：`src/constants/app.ts`（`DEFAULT_LOG_MAX_LENGTH` 兜底、`LOG_FLUSH_INTERVAL`）、`task.ts`（`DEFAULT_EXTREME_ROW_THRESHOLD` 兜底 / `EXTREME_OVERSCAN` / `NORMAL_OVERSCAN` / 分组分页与渲染步长）、`theme.ts`、`preview.ts`、`recordColumns.ts`（记录管理页列定义与 kind 文案）。
 - 后端：`src-tauri/src/config.rs`（`HASH_QUEUE_SIZE` / `PARTIAL_BATCH_SIZE` / `PAUSE_SLEEP_MS`，加一组 `DEFAULT_*` 作为配置兜底）。

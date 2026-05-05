@@ -26,6 +26,12 @@ import {
   NORMAL_OVERSCAN
 } from "../../constants/task";
 import { useConfigStore } from "../../stores/config";
+import {
+  formatApplyToast,
+  formatPartialRollbackToast,
+  formatRollbackToast
+} from "../../utils/format";
+import { confirmMissingPaths } from "../../composables/useDangerConfirm";
 import type { VirtualColumn } from "../../types/virtualTable";
 import Panel from "./Panel.vue";
 import VirtualTable from "./VirtualTable.vue";
@@ -110,17 +116,8 @@ async function handleApply() {
   }
 
   const result = await props.apply(normalized, selected);
-  ElMessage.success(`完成：成功 ${result.success}，失败 ${result.failed}`);
+  ElMessage.success(formatApplyToast(result));
   selectedOldPaths.value = [];
-}
-
-async function confirmMissing(count: number, prefix = "") {
-  if (!count) return;
-  await ElMessageBox.confirm(
-    `${prefix}有 ${count} 个文件不存在，仅撤回存在文件，继续？`,
-    "缺失提示",
-    { type: "warning" }
-  );
 }
 
 async function handleRollbackLast() {
@@ -129,11 +126,9 @@ async function handleRollbackLast() {
     return;
   }
   const check = await props.checkRollback(null);
-  await confirmMissing(check.missingPaths.length);
+  await confirmMissingPaths(check.missingPaths.length);
   const resp = await props.rollback(null);
-  ElMessage.success(
-    `撤回完成：成功 ${resp.success}，失败 ${resp.failed}，跳过缺失 ${resp.skippedMissing}`
-  );
+  ElMessage.success(formatRollbackToast(resp));
 }
 
 async function handleRollbackSelected() {
@@ -151,11 +146,9 @@ async function handleRollbackSelected() {
     return;
   }
   const check = await props.checkRollback(itemIds);
-  await confirmMissing(check.missingPaths.length, "选中项中");
+  await confirmMissingPaths(check.missingPaths.length, { prefix: "选中项中" });
   const resp = await props.rollback(itemIds);
-  ElMessage.success(
-    `部分撤回完成：成功 ${resp.success}，失败 ${resp.failed}，跳过缺失 ${resp.skippedMissing}`
-  );
+  ElMessage.success(formatPartialRollbackToast(resp));
 }
 </script>
 

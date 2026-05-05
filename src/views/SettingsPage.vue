@@ -17,6 +17,7 @@ import { useConfigStore } from "../stores/config";
 import { THEME_OPTIONS } from "../constants/theme";
 import { stripWindowsExtendedPrefix } from "../utils/path";
 import { readTextFile, writeTextFile } from "../services/settings";
+import { pickFolder } from "../composables/useFolderPicker";
 import Panel from "../components/common/Panel.vue";
 
 const configStore = useConfigStore();
@@ -100,18 +101,8 @@ async function changeTheme(v: any) {
  * 所以前端只把目录路径塞进去就行，不需要手动拼文件名。
  */
 async function pickDbFolder() {
-  try {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "选择数据库存储目录"
-    });
-    if (typeof selected === "string" && selected) {
-      customDbPath.value = selected;
-    }
-  } catch (e) {
-    ElMessage.error(`打开目录选择失败：${String(e)}`);
-  }
+  const selected = await pickFolder("选择数据库存储目录");
+  if (selected) customDbPath.value = selected;
 }
 
 /**
@@ -120,18 +111,8 @@ async function pickDbFolder() {
  * 留空 → 后端去重移动会兜底到 `<exe_dir>/temp_moved_files`。
  */
 async function pickMoveTargetFolder() {
-  try {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "选择移动目标目录"
-    });
-    if (typeof selected === "string" && selected) {
-      configStore.settings.moveTargetPath = selected;
-    }
-  } catch (e) {
-    ElMessage.error(`打开目录选择失败：${String(e)}`);
-  }
+  const selected = await pickFolder("选择移动目标目录");
+  if (selected) configStore.settings.moveTargetPath = selected;
 }
 
 /**
@@ -141,18 +122,8 @@ async function pickMoveTargetFolder() {
  * `<exe_dir>/mod-backups`。每条记录会自动落入 `<root>/<record_id>/`。
  */
 async function pickModBackupFolder() {
-  try {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "选择 Mod 备份目录"
-    });
-    if (typeof selected === "string" && selected) {
-      configStore.settings.modBackupDir = selected;
-    }
-  } catch (e) {
-    ElMessage.error(`打开目录选择失败：${String(e)}`);
-  }
+  const selected = await pickFolder("选择 Mod 备份目录");
+  if (selected) configStore.settings.modBackupDir = selected;
 }
 
 async function handleDeleteDb() {

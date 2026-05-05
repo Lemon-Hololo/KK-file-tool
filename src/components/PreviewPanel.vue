@@ -1,58 +1,48 @@
 <script setup lang="ts">
+/**
+ * 文件预览 Popover：包裹 slot 内容，鼠标悬停弹出预览浮层。
+ *
+ * 仅 popover 模式 —— 历史上还存在过"独立卡片模式（不传 path）"，但全工程
+ * 已经只剩下 [`PathPreviewLink`](./PathPreviewLink.vue) 这一个调用点，且必传
+ * `path`，所以独立模式被删除。
+ *
+ * # 为什么不用 el-card / el-scrollbar
+ * 见 CLAUDE.md §7：自有原语优先；`el-card` 的 `__body` 类名不可控、`el-scrollbar`
+ * 在嵌套 popper 里偶发 ResizeObserver 抖动。改用普通 div + `.ff-scroll`。
+ */
 import { computed, defineComponent, h, ref, watch } from "vue";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useElementSize } from "@vueuse/core";
 import {
   ElAlert,
   ElEmpty,
-  ElScrollbar,
-  ElSkeleton,
   ElTable,
-  ElTableColumn,
+  ElTableColumn
 } from "element-plus";
 import { Document } from "@element-plus/icons-vue";
 import { usePreviewStore } from "../stores/preview";
 import { PREVIEW_UNSUPPORTED_TEXT } from "../constants/preview";
 import { stripWindowsExtendedPrefix } from "../utils/path";
 
-/**
- * 双模式组件：
- *  - 独立模式（不传 path）：固定卡片，从 previewStore 读取当前文件展示
- *  - Popover 模式（传入 path）：包裹 slot 内容，鼠标悬停弹出预览浮层
- */
 const props = defineProps<{
-  path?: string;
+  /** 必传文件路径；hover 时拉取预览。 */
+  path: string;
 }>();
 
 const store = usePreviewStore();
 
-// ---- 独立模式：动态内容高度 ----
-const cardRef = ref<HTMLElement | null>(null);
-const { height: cardHeight } = useElementSize(cardRef);
-const standaloneContentHeight = computed(() =>
-  cardHeight.value ? Math.max(260, cardHeight.value - 80) : 420
-);
+const safePath = computed(() => stripWindowsExtendedPrefix(props.path ?? ""));
+const imgSrc = computed(() => (safePath.value ? convertFileSrc(safePath.value) : ""));
 
-// ---- 模式判断 ----
-const isPopoverMode = computed(() => props.path !== undefined);
-
-// Popover 模式用 props.path，独立模式用 store.filePath
-const safePath = computed(() =>
-  stripWindowsExtendedPrefix(
-    isPopoverMode.value ? (props.path ?? "") : (store.filePath ?? "")
-  )
-);
-const imgSrc = computed(() =>
-  safePath.value ? convertFileSrc(safePath.value) : ""
-);
-
-// ---- Popover 模式：悬停控制 ----
+// ---- 悬停控制 ----
 const popoverVisible = ref(false);
 let enterTimer: ReturnType<typeof setTimeout> | null = null;
 let leaveTimer: ReturnType<typeof setTimeout> | null = null;
 
 function onTriggerEnter() {
-  if (leaveTimer) { clearTimeout(leaveTimer); leaveTimer = null; }
+  if (leaveTimer) {
+    clearTimeout(leaveTimer);
+    leaveTimer = null;
+  }
   enterTimer = setTimeout(() => {
     if (props.path) store.open(props.path);
     popoverVisible.value = true;
@@ -60,40 +50,53 @@ function onTriggerEnter() {
 }
 
 function onTriggerLeave() {
-  if (enterTimer) { clearTimeout(enterTimer); enterTimer = null; }
-  leaveTimer = setTimeout(() => { popoverVisible.value = false; }, 200);
+  if (enterTimer) {
+    clearTimeout(enterTimer);
+    enterTimer = null;
+  }
+  leaveTimer = setTimeout(() => {
+    popoverVisible.value = false;
+  }, 200);
 }
 
 function onPopoverEnter() {
-  if (leaveTimer) { clearTimeout(leaveTimer); leaveTimer = null; }
+  if (leaveTimer) {
+    clearTimeout(leaveTimer);
+    leaveTimer = null;
+  }
 }
 
 function onPopoverLeave() {
-  leaveTimer = setTimeout(() => { popoverVisible.value = false; }, 200);
+  leaveTimer = setTimeout(() => {
+    popoverVisible.value = false;
+  }, 200);
 }
 
 // 路径变化时刷新（仅 Popover 已展开时）
 watch(
   () => props.path,
-  (p) => { if (p && popoverVisible.value) store.open(p); }
+  (p) => {
+    if (p && popoverVisible.value) store.open(p);
+  }
 );
 
-// -----------------------------------------------------------------------
-// PreviewContent：纯渲染子组件，被独立模式和 Popover 模式共用，避免模板重复
-// 定义在此处而非单独文件，是因为它与 PreviewPanel 强耦合且不对外暴露
-// -----------------------------------------------------------------------
+// ---- 预览内容子组件（render function；不引入 scoped 样式） ----
 const PreviewContent = defineComponent({
   name: "PreviewContent",
   props: {
     store: { type: Object, required: true },
     safePath: { type: String, required: true },
     imgSrc: { type: String, required: true },
-    contentHeight: { type: Number, required: true },
+    contentHeight: { type: Number, required: true }
   },
   setup(p) {
     return () => {
       if (p.store.loading) {
-        return h(ElSkeleton, { rows: 8, animated: true });
+        return h(
+          "div",
+          { class: "pc-skeleton" },
+          [h("span", { class: "pc-skeleton-text" }, "加载中…")]
+        );
       }
 
       if (!p.store.filePath) {
@@ -101,8 +104,6 @@ const PreviewContent = defineComponent({
       }
 
       const type = p.store.data?.type ?? "none";
-
-      // 路径提示（字号小，作为内容区顶部补充说明）
       const pathHint = h("div", { class: "pc-path" }, p.safePath);
 
       if (type === "text") {
@@ -110,28 +111,37 @@ const PreviewContent = defineComponent({
           pathHint,
           p.store.data?.truncated
             ? h(ElAlert, {
-              title: "仅显示前 256KB 内容",
-              type: "warning",
-              showIcon: true,
-              closable: false,
-              style: "margin-bottom:8px",
-            })
+                title: "仅显示前 256KB 内容",
+                type: "warning",
+                showIcon: true,
+                closable: false,
+                style: "margin-bottom:8px"
+              })
             : null,
-          h(ElScrollbar, { height: p.contentHeight }, () =>
-            h("pre", { class: "pc-pre" }, p.store.data?.content ?? "")
-          ),
+          h(
+            "div",
+            {
+              class: "pc-pre-wrap ff-scroll",
+              style: { maxHeight: `${p.contentHeight}px` }
+            },
+            [h("pre", { class: "pc-pre" }, p.store.data?.content ?? "")]
+          )
         ]);
       }
 
       if (type === "image") {
         return h("div", { class: "pc-wrap" }, [
           pathHint,
-          h("div", { class: "pc-img-wrap", style: { height: `${p.contentHeight}px` } }, [
-            h("img", { src: p.imgSrc, class: "pc-img" }),
-          ]),
-          h("div", { class: "pc-meta" },
-            `${p.store.data?.width} x ${p.store.data?.height} | ${p.store.data?.format}`
+          h(
+            "div",
+            { class: "pc-img-wrap", style: { height: `${p.contentHeight}px` } },
+            [h("img", { src: p.imgSrc, class: "pc-img" })]
           ),
+          h(
+            "div",
+            { class: "pc-meta" },
+            `${p.store.data?.width} x ${p.store.data?.height} | ${p.store.data?.format}`
+          )
         ]);
       }
 
@@ -140,41 +150,42 @@ const PreviewContent = defineComponent({
           pathHint,
           p.store.data?.truncated
             ? h(ElAlert, {
-              title: "条目过多，已截断展示",
-              type: "warning",
-              showIcon: true,
-              closable: false,
-              style: "margin-bottom:8px",
-            })
+                title: "条目过多，已截断展示",
+                type: "warning",
+                showIcon: true,
+                closable: false,
+                style: "margin-bottom:8px"
+              })
             : null,
-          h(ElTable, {
-            data: p.store.data?.entries ?? [],
-            size: "small",
-            border: true,
-            height: p.contentHeight,
-          }, () => [
-            h(ElTableColumn, { prop: "name", label: "内部路径" }),
-            h(ElTableColumn, { prop: "size", label: "大小", width: 120 }),
-            h(ElTableColumn, { prop: "isDir", label: "目录", width: 80 }),
-            h(ElTableColumn, { prop: "modifiedAt", label: "修改时间", width: 170 }),
-          ]),
+          h(
+            ElTable,
+            {
+              data: p.store.data?.entries ?? [],
+              size: "small",
+              border: true,
+              height: p.contentHeight
+            },
+            () => [
+              h(ElTableColumn, { prop: "name", label: "内部路径" }),
+              h(ElTableColumn, { prop: "size", label: "大小", width: 120 }),
+              h(ElTableColumn, { prop: "isDir", label: "目录", width: 80 }),
+              h(ElTableColumn, { prop: "modifiedAt", label: "修改时间", width: 170 })
+            ]
+          )
         ]);
       }
 
-      // 不支持的类型
       return h("div", { class: "pc-wrap" }, [
         pathHint,
-        h(ElEmpty, { description: PREVIEW_UNSUPPORTED_TEXT }),
+        h(ElEmpty, { description: PREVIEW_UNSUPPORTED_TEXT })
       ]);
     };
-  },
+  }
 });
 </script>
 
 <template>
-  <!-- ========== Popover 包裹模式 ========== -->
   <el-popover
-    v-if="isPopoverMode"
     :visible="popoverVisible"
     placement="right-start"
     :width="440"
@@ -193,7 +204,12 @@ const PreviewContent = defineComponent({
           <span class="pop-title-text" :title="safePath">{{ safePath }}</span>
         </div>
         <div class="pop-body">
-          <PreviewContent :store="store" :safe-path="safePath" :img-src="imgSrc" :content-height="360" />
+          <PreviewContent
+            :store="store"
+            :safe-path="safePath"
+            :img-src="imgSrc"
+            :content-height="360"
+          />
         </div>
       </div>
     </template>
@@ -204,24 +220,9 @@ const PreviewContent = defineComponent({
       </span>
     </template>
   </el-popover>
-
-  <!-- ========== 独立卡片模式 ========== -->
-  <el-card v-else ref="cardRef" class="standalone-card">
-    <template #header>文件预览</template>
-    <PreviewContent :store="store" :safe-path="safePath" :img-src="imgSrc" :content-height="standaloneContentHeight" />
-  </el-card>
 </template>
 
 <style scoped>
-/* ---- 独立卡片 ---- */
-.standalone-card {
-  height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-/* ---- Popover 触发器 ---- */
 .pop-trigger {
   display: inline-block;
   max-width: 100%;
@@ -231,7 +232,6 @@ const PreviewContent = defineComponent({
   cursor: default;
 }
 
-/* ---- Popover 内容 ---- */
 .pop-wrap {
   display: flex;
   flex-direction: column;
@@ -287,12 +287,29 @@ const PreviewContent = defineComponent({
   word-break: break-all;
 }
 
+.pc-pre-wrap {
+  overflow: auto;
+  background: var(--ff-bg-subtle);
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
 .pc-pre {
   white-space: pre-wrap;
   word-break: break-all;
   margin: 0;
   font-size: 12px;
   line-height: 1.6;
+  font-family: ui-monospace, "SF Mono", Monaco, Consolas, monospace;
+}
+
+.pc-skeleton {
+  padding: 16px 12px;
+  font-size: 12px;
+  color: var(--ff-text-muted);
+}
+.pc-skeleton-text {
+  display: inline-block;
 }
 
 .pc-meta {

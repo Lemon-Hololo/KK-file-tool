@@ -66,10 +66,7 @@ export const usePreviewStore = defineStore("preview", {
      */
     async open(filePath: string) {
       const nextPath = filePath.trim();
-      if (!nextPath) {
-        this.clear();
-        return null;
-      }
+      if (!nextPath) return null;
 
       if (nextPath === this.filePath && (this.loading || this.data)) {
         return activePreviewRequest ?? this.data;
@@ -92,14 +89,6 @@ export const usePreviewStore = defineStore("preview", {
       }
 
       return activePreviewRequest;
-    },
-
-    /** 清空当前预览展示。 */
-    clear() {
-      this.filePath = "";
-      this.data = null;
-      this.loading = false;
-      queuedPreviewPath = null;
     }
   }
 });

@@ -3,6 +3,9 @@
  *
  * 流程：preview 拿到预览列表 → 用户勾选 → apply 写库 + rename →
  * 暴露 `lastApplyResult` 驱动"撤回本次/选中"。
+ *
+ * 记录 CRUD（list/detail/delete/rollback/...）由 [_opRecordCrud.ts](_opRecordCrud.ts)
+ * 工厂统一生成；本 store 只声明业务专属的 preview / apply。
  */
 
 import { defineStore } from "pinia";
@@ -21,6 +24,15 @@ import {
   previewSuffixChange,
   rollbackSuffixChange
 } from "../services/suffix";
+import { createOpRecordCrudActions } from "./_opRecordCrud";
+
+const crud = createOpRecordCrudActions<SuffixRecordSummary, SuffixRecordDetail>({
+  list: listSuffixChangeRecords,
+  loadDetail: getSuffixChangeRecordDetail,
+  remove: deleteSuffixChangeRecord,
+  checkRollback: checkSuffixRollback,
+  rollback: rollbackSuffixChange
+});
 
 export const useSuffixStore = defineStore("suffix", {
   state: () => ({
@@ -31,6 +43,8 @@ export const useSuffixStore = defineStore("suffix", {
   }),
 
   actions: {
+    ...crud,
+
     /** 拉取最新预览；顺带清空上次 apply 结果避免旧数据挡住预览渲染。 */
     async preview(paths: string[], targetSuffix: string) {
       this.lastApplyResult = null;
@@ -47,43 +61,6 @@ export const useSuffixStore = defineStore("suffix", {
       const result = await applySuffixChange(paths, targetSuffix, recordName, selectedOldPaths);
       this.lastApplyResult = result;
       return result;
-    },
-
-    /** 刷新记录列表。 */
-    async refreshRecords() {
-      this.records = await listSuffixChangeRecords();
-    },
-
-    /** 加载记录详情（抽屉展示用）。 */
-    async loadDetail(recordId: string) {
-      this.currentDetail = await getSuffixChangeRecordDetail(recordId);
-      return this.currentDetail;
-    },
-
-    checkRollback(recordId: string, itemIds?: number[] | null) {
-      return checkSuffixRollback(recordId, itemIds);
-    },
-
-    rollback(recordId: string, itemIds?: number[] | null, forceIgnoreMissing = false) {
-      return rollbackSuffixChange(recordId, itemIds, forceIgnoreMissing);
-    },
-
-    async remove(recordId: string) {
-      await deleteSuffixChangeRecord(recordId);
-      await this.refreshRecords();
-      if (this.currentDetail?.summary.recordId === recordId) {
-        this.currentDetail = null;
-      }
-    },
-
-    async removeBatch(recordIds: string[]) {
-      for (const id of recordIds) {
-        await deleteSuffixChangeRecord(id);
-      }
-      await this.refreshRecords();
-      if (this.currentDetail && recordIds.includes(this.currentDetail.summary.recordId)) {
-        this.currentDetail = null;
-      }
     }
   }
 });

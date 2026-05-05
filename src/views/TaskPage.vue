@@ -16,7 +16,6 @@
  */
 
 import { onMounted, ref, computed } from "vue";
-import { open } from "@tauri-apps/plugin-dialog";
 import { ElMessage } from "element-plus";
 import { useStorage } from "@vueuse/core";
 import { Folder, Delete, ArrowLeft } from "@element-plus/icons-vue";
@@ -28,6 +27,7 @@ import { usePreviewStore } from "../stores/preview";
 
 import { uniquePaths, stripWindowsExtendedPrefix } from "../utils/path";
 import { usePathNormalize } from "../composables/usePathNormalize";
+import { pickFolders } from "../composables/useFolderPicker";
 import type { FileEntry } from "../types/task";
 
 import Panel from "../components/common/Panel.vue";
@@ -90,14 +90,10 @@ function addPath() {
   pathInput.value = "";
 }
 
-async function pickFolders() {
-  const selected = await open({ directory: true, multiple: true, title: "选择文件夹" });
-  if (!selected) return;
-  const arr = Array.isArray(selected) ? selected : [selected];
-  paths.value = uniquePaths([
-    ...paths.value,
-    ...arr.filter((x): x is string => typeof x === "string")
-  ]);
+async function pickFoldersForInput() {
+  const arr = await pickFolders("选择文件夹");
+  if (!arr.length) return;
+  paths.value = uniquePaths([...paths.value, ...arr]);
 }
 
 function removePath(i: number) {
@@ -140,7 +136,7 @@ onMounted(async () => {
           <span class="path-count">{{ paths.length }} 条</span>
         </template>
         <template #actions>
-          <el-button size="small" text :icon="Folder" @click="pickFolders">选择</el-button>
+          <el-button size="small" text :icon="Folder" @click="pickFoldersForInput">选择</el-button>
           <el-button size="small" text :icon="Delete" :disabled="!paths.length" @click="clearPaths">清空</el-button>
         </template>
 

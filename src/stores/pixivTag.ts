@@ -42,6 +42,7 @@ import {
   startPixivTagScan
 } from "../services/pixivTag";
 import { stopTask } from "../services/task";
+import { createLocalTaskId } from "../utils/taskId";
 import { useRuntimeStore } from "./runtime";
 import { useConfigStore } from "./config";
 
@@ -421,10 +422,3 @@ export const usePixivTagStore = defineStore("pixivTag", {
     }
   }
 });
-
-function createLocalTaskId(prefix: string): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
