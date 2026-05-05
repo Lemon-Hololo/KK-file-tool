@@ -9,9 +9,6 @@
 /// 哈希结果通道的缓冲区大小；更大缓冲减轻背压，提高吞吐。
 pub const HASH_QUEUE_SIZE: usize = 2048;
 
-/// 扫描结果通道的缓冲区大小（当前未使用，预留）。
-pub const SCAN_QUEUE_SIZE: usize = 2048;
-
 /// 向前端分批推送结果的批次大小；平衡实时性和事件开销。
 pub const PARTIAL_BATCH_SIZE: usize = 30;
 
@@ -70,9 +67,9 @@ pub const DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE: i32 = 60;
 
 /// Pixiv 增量结果在前端的合并刷新间隔（毫秒）。
 ///
-/// 0 = 即刻：partial 一到达 store 就立刻 commit（行 UI 会跟着每条结果实时跳动，
+/// `0` = 即刻：partial 一到达 store 就立刻 commit（行 UI 会跟着每条结果实时跳动，
 /// 50K 张图的批量场景下视觉上比较密集）。
-/// >0 = 节流：partial 进入缓冲区，按本间隔批量 commit 一次（用户能稳稳读完每屏
+/// `>0` = 节流：partial 进入缓冲区，按本间隔批量 commit 一次（用户能稳稳读完每屏
 /// 内容再看下一波刷新）。**间隔到了的当下立即 flush 一次，确保 done 终态不被
 /// 拖延**。UI 限制最大 10000ms 兜底。
 pub const DEFAULT_PIXIV_PARTIAL_FLUSH_INTERVAL_MS: i32 = 0;

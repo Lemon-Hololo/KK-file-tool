@@ -72,11 +72,6 @@ impl TaskLogContext {
         self.emit(log_level::WARN, message, Some(to_user_friendly_path(path)));
     }
 
-    /// 发送带文件路径的错误日志。
-    pub fn error_path(&self, message: &str, path: &Path) {
-        self.emit(log_level::ERROR, message, Some(to_user_friendly_path(path)));
-    }
-
     /// 发送带已格式化文件路径的信息日志。
     pub fn info_file(&self, message: &str, file_path: String) {
         self.emit(log_level::INFO, message, Some(file_path));
@@ -85,10 +80,5 @@ impl TaskLogContext {
     /// 发送带已格式化文件路径的警告日志。
     pub fn warn_file(&self, message: &str, file_path: String) {
         self.emit(log_level::WARN, message, Some(file_path));
-    }
-
-    /// 发送带已格式化文件路径的错误日志。
-    pub fn error_file(&self, message: &str, file_path: String) {
-        self.emit(log_level::ERROR, message, Some(file_path));
     }
 }

@@ -14,6 +14,11 @@
 //!   `id / record_id / old_path / new_path / apply_success / apply_error /`
 //!   `rollback_success / rollback_error / updated_at`
 //!   任何额外字段由业务侧另建辅助表承载，不在此处。
+//!
+//! `create_record` 等核心写入方法都要把"主表所有列 + 业务侧附加列 + 时间戳"一次
+//! 性传入，参数自然超 7 个；包成结构体只是把 8 行 set_xxx 换成 8 行 setter，
+//! 没有可读性收益。统一在模块级 allow，不逐个加 `#[allow]`。
+#![allow(clippy::too_many_arguments)]
 
 use std::path::Path;
 

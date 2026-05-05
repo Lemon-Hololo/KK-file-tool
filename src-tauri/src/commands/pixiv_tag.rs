@@ -24,7 +24,9 @@ pub fn scan_pixiv_image_candidates(paths: Vec<String>) -> Result<Vec<PixivImageR
 /// 启动 Pixiv tag 拉取长任务，返回 `task_id`。
 ///
 /// 取消通过共享的 [`crate::commands::runtime::stop_task`] 完成。
-/// 终态（成功 / 失败 / 取消）会通过 `AppState::remove_task` 清理自身。
+/// 终态（成功 / 失败 / 取消）由 `pixiv_tag::run_pixiv_tag_scan` 内部统一收尾
+/// （`finalize_done` / `finalize_failed`），命令层不需要再叠一层
+/// `spawn_long_task` 的失败路径——否则失败会发两次 state_changed=Failed。
 #[tauri::command]
 pub async fn start_pixiv_tag_scan_task(
     app: AppHandle,
@@ -39,16 +41,10 @@ pub async fn start_pixiv_tag_scan_task(
     let task_id_clone = task_id.clone();
 
     tauri::async_runtime::spawn(async move {
-        let result = pixiv_tag::run_pixiv_tag_scan(
-            app_clone.clone(),
-            state_clone.clone(),
-            task_id_clone.clone(),
-            pids,
-            runtime,
-        )
-        .await;
-
-        let _ = result;
+        // run_pixiv_tag_scan 永远走自己的终态收尾，返回值用作内部断言；
+        // 这里丢弃它即可。
+        let _ = pixiv_tag::run_pixiv_tag_scan(app_clone, state_clone, task_id_clone, pids, runtime)
+            .await;
     });
 
     Ok(task_id)

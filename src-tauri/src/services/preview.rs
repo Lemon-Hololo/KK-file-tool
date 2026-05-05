@@ -22,18 +22,41 @@ fn preview_text(db_path: &Path, path: &str) -> AppResult<serde_json::Value> {
     let mut f = File::open(ep).map_err(|e| AppError::Io(e.to_string()))?;
 
     let limit = resolve_text_preview_max_bytes(db_path);
-    let mut buf = vec![0u8; limit];
+    // 多读 3 个字节给末尾的多字节 UTF-8 字符兜底——`limit` 可能正好截在
+    // 一个 4 字节字符的中间，多 3 字节让 from_utf8_lossy 不会把末尾合法
+    // 字符识别成 `?`；展示长度仍按 limit 截。
+    let mut buf = vec![0u8; limit + 3];
     let n = f.read(&mut buf).map_err(|e| AppError::Io(e.to_string()))?;
     buf.truncate(n);
 
-    let content = String::from_utf8_lossy(&buf).to_string();
+    // 截到原始 limit 时再做一次"最近一个 UTF-8 字符边界"对齐，避免末尾被
+    // 渲染为 `?`。靠 `is_char_boundary` 反查最多 3 个字节即可。
+    let truncated = n > limit;
+    let display_end = if truncated {
+        let mut end = limit;
+        while end > 0 && !is_utf8_char_boundary(&buf, end) {
+            end -= 1;
+        }
+        end
+    } else {
+        n
+    };
+    let content = String::from_utf8_lossy(&buf[..display_end]).to_string();
 
     Ok(json!({
       "type": "text",
-      "size": n,
-      "truncated": n >= limit,
+      "size": display_end,
+      "truncated": truncated,
       "content": content
     }))
+}
+
+fn is_utf8_char_boundary(buf: &[u8], idx: usize) -> bool {
+    if idx == 0 || idx == buf.len() {
+        return true;
+    }
+    // UTF-8 后续字节模式 10xxxxxx；首字节绝不会是 10xxxxxx。
+    (buf[idx] & 0b1100_0000) != 0b1000_0000
 }
 
 fn preview_image(path: &str) -> AppResult<serde_json::Value> {

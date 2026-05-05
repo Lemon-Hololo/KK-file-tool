@@ -426,7 +426,9 @@ pub async fn run_pixiv_tag_scan(
     events::emit_progress(&app, &task_id, stages::PIXIV_TAG, 0, pids.len());
 
     if pids.is_empty() {
-        finalize_done(&app, &state, &task_id, false);
+        // 空候选时也要尊重 runtime.is_cancelled()——若启动瞬间用户就点了取消，
+        // 状态应当是 Cancelled 而不是 Completed，否则前端会误判任务正常完成。
+        finalize_done(&app, &state, &task_id, runtime.is_cancelled());
         return Ok(());
     }
 
@@ -598,7 +600,7 @@ pub async fn run_pixiv_tag_scan(
                 if buffer.len() >= PARTIAL_FLUSH_BATCH
                     || last_flush.elapsed() >= PARTIAL_FLUSH_INTERVAL
                 {
-                    flush_partial(&app, &task_id, &mut buffer, false);
+                    flush_partial(&app, &task_id, &mut buffer);
                     last_flush = Instant::now();
                     events::emit_progress(&app, &task_id, stages::PIXIV_TAG, processed, total);
                 }
@@ -606,7 +608,7 @@ pub async fn run_pixiv_tag_scan(
             Ok(None) => break,
             Err(_) => {
                 if !buffer.is_empty() {
-                    flush_partial(&app, &task_id, &mut buffer, false);
+                    flush_partial(&app, &task_id, &mut buffer);
                     last_flush = Instant::now();
                     events::emit_progress(&app, &task_id, stages::PIXIV_TAG, processed, total);
                 }
@@ -616,7 +618,7 @@ pub async fn run_pixiv_tag_scan(
 
     // 4) 终态：flush 残留 + 标记 done
     if !buffer.is_empty() {
-        flush_partial(&app, &task_id, &mut buffer, false);
+        flush_partial(&app, &task_id, &mut buffer);
     }
     events::emit_progress(&app, &task_id, stages::PIXIV_TAG, processed, total);
     // 终态总结日志：跑完 / 取消时给出"成功 X / 失败 Y / 总计 Z"，方便用户对完
@@ -645,30 +647,21 @@ pub async fn run_pixiv_tag_scan(
 }
 
 /// 把 buffer 里的 items 推到前端，清空 buffer。
-fn flush_partial(
-    app: &tauri::AppHandle,
-    task_id: &str,
-    buffer: &mut Vec<PixivTagPartialItem>,
-    done: bool,
-) {
+///
+/// `done = true` 的终态信号在 `finalize_done` / `finalize_failed` 里直接发空 payload，
+/// 不走这里——本函数只负责中途的增量 flush，所以取消了 done 参数。
+fn flush_partial(app: &tauri::AppHandle, task_id: &str, buffer: &mut Vec<PixivTagPartialItem>) {
     let payload = PixivTagPartialPayload {
         task_id: task_id.to_string(),
         items: std::mem::take(buffer),
-        done,
+        done: false,
     };
     events::emit_pixiv_tag_partial(app, &payload);
 }
 
 /// 任务正常结束（含取消、空候选）：发空 `done = true` partial、改状态、清 task 表。
 fn finalize_done(app: &tauri::AppHandle, state: &Arc<AppState>, task_id: &str, cancelled: bool) {
-    events::emit_pixiv_tag_partial(
-        app,
-        &PixivTagPartialPayload {
-            task_id: task_id.to_string(),
-            items: Vec::new(),
-            done: true,
-        },
-    );
+    emit_done_partial(app, task_id);
     events::emit_state_changed(
         app,
         task_id,
@@ -677,8 +670,15 @@ fn finalize_done(app: &tauri::AppHandle, state: &Arc<AppState>, task_id: &str, c
     state.remove_task(task_id);
 }
 
-/// 任务失败：发 `done = true` partial（前端能解锁 running 状态）+ 失败事件 + 清 task 表。
+/// 任务失败：先发 `done = true` partial 让前端解锁 running 状态，再走通用的
+/// `finalize_failed_long_task` 完成"状态切到 Failed + emit task_failed + 清 task 表"。
 fn finalize_failed(app: &tauri::AppHandle, state: &Arc<AppState>, task_id: &str, message: &str) {
+    emit_done_partial(app, task_id);
+    events::finalize_failed_long_task(app, state, task_id, message);
+}
+
+/// 终态共用的"发一条空 done partial"——前端依靠它关闭 running 状态。
+fn emit_done_partial(app: &tauri::AppHandle, task_id: &str) {
     events::emit_pixiv_tag_partial(
         app,
         &PixivTagPartialPayload {
@@ -687,7 +687,6 @@ fn finalize_failed(app: &tauri::AppHandle, state: &Arc<AppState>, task_id: &str,
             done: true,
         },
     );
-    events::finalize_failed_long_task(app, state, task_id, message);
 }
 
 /// 把单张图片移动到 `<output_dir>/<sanitized_tag>/<basename>`。返回新的用户友好路径。

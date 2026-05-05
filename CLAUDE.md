@@ -22,7 +22,7 @@
 
 - **文件去重**：BLAKE3 哈希识别重复文件，支持暂停/恢复/停止与增量移动。
 - **后缀批量修改**：批量改扩展名，支持预览 / 应用 / 撤回 / 历史记录。
-- **空文件夹清理**：递归预览空目录，按深度从深到浅删除并写入可撤回记录；撤回会重新创建空目录，默认不删除任务输入根目录。
+- **空文件夹清理**：递归预览空目录，按深度从深到浅删除并写入可撤回记录；撤回会重新创建空目录，默认不删除任务输入根目录。`preview_empty_dirs` 单条路径访问失败（不存在 / 无权限 / 不是目录）只跳过该条路径，不再 abort 整批扫描——与 dedup / suffix 的 warn-and-continue 一致；只有全部路径都失败时才返回错误。
 - **Mod 工具**：针对 Illusion 系列 `.zipmod` 的六类操作——
   - **重命名**：按 manifest.xml 的 `guid/author/version` 生成 `[author] guid-version.zipmod`；同批次撞名时按稳定顺序自动分配 ` (N)` 冲突后缀。
   - **归类**：按文件名首个 `[...]` 建子目录归类。
@@ -153,7 +153,7 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 │   │       ├── mod.rs                   # 记录查询/删除/重命名/撤回（映射到 op_pipeline）
 │   │       ├── backup.rs                # Mod 备份目录解析与备份对构造（cleanup / modify 共享 prepare_mod_backup 入口）
 │   │       ├── rename.rs / organize.rs  # 纯 rename → op_pipeline::persist_apply_rename_pairs
-│   │       ├── cleanup.rs               # 重复/不同版本检查；分块并行解析 manifest，删除走 backup::prepare_mod_backup
+│   │       ├── cleanup.rs               # 重复/不同版本检查；分块并行解析 manifest，两类扫描共用 GroupSpec trait + run_grouped_scan/preview_grouped；删除走 backup::prepare_mod_backup
 │   │       ├── modify.rs                # 非纯 rename → op_pipeline::persist_apply_with_executor，备份对走 backup::prepare_mod_backup
 │   │       └── scan.rs / zipmod.rs
 │   ├── commands/                        # #[tauri::command]，纯转发
@@ -292,7 +292,7 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 
 ### 重复 / 版本检查的扫描流程
 
-只走一次 WalkDir：先收集候选 PathBuf 列表，用 `len()` 作为进度 total；第二阶段分块（chunk = 256）并行解析 manifest，每个 chunk 处理完通过 `mod_duplicate_partial` / `mod_version_partial` 增量下发，避免一次性大响应。
+只走一次 WalkDir：先收集候选 PathBuf 列表，用 `len()` 作为进度 total；第二阶段分块（chunk = 256）并行解析 manifest，每个 chunk 处理完通过 `mod_duplicate_partial` / `mod_version_partial` 增量下发，避免一次性大响应。两类扫描的差异（分组 key、"成立"判定、partial event 类型、完成日志文案）抽成 `GroupSpec` trait（`DuplicateSpec` / `VersionSpec`），同步预览（`preview_grouped`）和长任务（`run_grouped_scan`）都共享同一份骨架——添加新分组维度时实现 trait 即可，不再复制 200+ 行扫描循环。`apply_mod_delete`（重复 / 版本删除）日志输出走"一行总结 + 抽样 5 条 + 余 N 条略"模板，避免 1w 选择刷屏；详情仍可在记录详情页查看。
 
 新增命令的步骤：写 `commands/<mod>.rs` → `lib.rs::invoke_handler!` 注册 → 前端 `services/<feature>.ts` 封装 → `types/<feature>.ts` 同步类型。
 
@@ -316,7 +316,7 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 - **并发**：线程数统一 `op_pipeline::resolve_thread_count(db_path)`；自定义线程池用 `op_pipeline::rayon_pool(thread_count)?.install()` 本地化，不碰全局池。
 - **数据库迁移**：新增表用 `CREATE TABLE IF NOT EXISTS`；新增列 `let _ = conn.execute("ALTER TABLE ... ADD COLUMN ...")` 忽略重复列错误。不改已有列。
 - **数据库连接**：repo / schema 里按需调用 `db::open_connection(db_path)`，不要重新写 `Connection::open(...).map_err(...)` 的局部 helper。
-- **长任务运行时**：命令层创建长任务用 `AppState::create_task`，终态清理用 `AppState::remove_task`；运行控制用 `TaskRuntime::{pause,resume,cancel}`，去重结果缓存用 `AppState::{set_task_results,update_task_results,clear_task_results}`，不要在命令 / service 里直接写 `paused` / `cancelled` 原子位或手动遍历 / 加锁 `AppState` 内部表。
+- **长任务运行时**：命令层创建长任务用 `AppState::create_task`，终态清理用 `AppState::remove_task`；运行控制用 `TaskRuntime::{pause,resume,cancel}`，去重结果缓存用 `AppState::{set_task_results,update_task_results,clear_task_results}`，不要在命令 / service 里直接写 `paused` / `cancelled` 原子位或手动遍历 / 加锁 `AppState` 内部表。`AppState::has_active_tasks()` 判定基于"tasks 表是否非空"——只要任务还没走完终态收尾（包括取消后的备份目录 rename / 哈希记录落盘等），就视为活跃。`delete_database` 等需要文件独占的操作必须走这条更严格的判定，否则取消瞬间 + 删库会与正在 commit 的事务竞争。
 - **记录型操作**：直接用 `op_record_repo` + `op_pipeline`，非纯 rename 用 `persist_apply_with_executor`。
 
 ### TypeScript / Vue
@@ -455,7 +455,7 @@ Mod 各面板（Rename / Organize / Duplicate / Version / Scan）与去重分组
 ## 9. 性能与并发约定
 
 - **高频日志事件**：每条 `task_log` 是单条 IPC。前端 `runtime` store 把事件先写非响应式缓冲，每 150ms 批量刷入响应式 `logs`，超过 `LOG_MAX_LENGTH = 3000` 裁剪旧数据。后端如需进一步合批要新增 `task_log_batch` 事件并改前端监听器（目前未做）；热路径请只在 chunk / 阶段边界打日志。`PARTIAL_BATCH_SIZE = 30` 仅用于去重 `task_result_partial`。
-- **去重流水线**：扫描 → 哈希（Semaphore 限流，许可 = 线程数 × 倍率）→ 分组 → 发送。流式 `mpsc` 通道边收边分组。
+- **去重流水线**：扫描 → 哈希（Semaphore 限流，许可 = 线程数 × 倍率）→ 分组 → 发送。流式 `mpsc` 通道边收边分组。失败状态（扫描 future panic / 内部 IO 错误）由命令层统一发 `task_state_changed=Failed`，service 内部只 return `Err`，不再自行 emit——避免双重 Failed 事件。取消时同步 `Cancelled` 状态后立刻返回，半截分组缓存不会写进 `set_task_results`，下一次"重做"看到的是空缓存而不是上次取消瞬间的快照。
 - **Mod 扫描流水线**：tokio Semaphore 并发 = `线程数 × 倍率`；zip 读取 `tokio::task::spawn_blocking`；匹配结果进 `Arc<Mutex<Vec<_>>>`。
 - **重复 / 不同版本检查流水线**：单次 WalkDir 长任务。第一遍只收候选 PathBuf 列表（用 `len()` 当 total），第二阶段固定 chunk = 256 用 `op_pipeline::rayon_pool` 本地线程池并行解析 manifest，每 chunk 完成立刻聚合 + 增量推送（`mod_duplicate_partial` / `mod_version_partial`），避免一次性大响应。
 - **modify 流水线**：rayon 并行；每个文件 copy → 重写 zip（`raw_copy_file` 零重编码复制非 manifest 条目）→ atomic rename。失败自动清理临时文件 + 备份。
@@ -478,7 +478,7 @@ Mod 各面板（Rename / Organize / Duplicate / Version / Scan）与去重分组
 2. **命令注册**：新 `#[tauri::command]` 必须在 `lib.rs::invoke_handler!` 注册并写前端 service。
 3. **记录型操作**：走 `op_record_repo + op_pipeline + OpsPanel`，不要复制 suffix / mod_tools 当模板。非纯 rename 用 `persist_apply_with_executor`，item 记 `old_path = 原始, new_path = 备份`。
 4. **数据库迁移**：只允许 `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ... ADD COLUMN`，不改已有列。迁移写在 `schema.rs::init_schema` 末尾。
-5. **IPC 事件**：新事件登记 `constants.rs::events`，写 `services/events.rs` emit 函数，在前端 store 的 `initEvents` 监听。长任务 spawn 失败兜底统一调 `events::finalize_failed_long_task(app, state, task_id, err)`：发 `task_state_changed=Failed` + `task_failed` 事件 + `state.remove_task`。partial done 信号需要业务侧自行先发（不同任务 payload 不同），再调本 helper。**禁止在每个命令模块再抄一份 emit_state_changed + emit_task_failed + remove_task 三件套**。
+5. **IPC 事件**：新事件登记 `constants.rs::events`，写 `services/events.rs` emit 函数，在前端 store 的 `initEvents` 监听。长任务 spawn 失败兜底统一调 `events::finalize_failed_long_task(app, state, task_id, err)`：发 `task_state_changed=Failed` + `task_failed` 事件 + `state.remove_task`。partial done 信号需要业务侧自行先发（不同任务 payload 不同），再调本 helper。**禁止在每个命令模块再抄一份 emit_state_changed + emit_task_failed + remove_task 三件套**。命令层启动长任务统一走 `events::spawn_long_task(app, state, task_id, make_future, on_failure_extra)`：克隆 `state/app/task_id` 给 spawn 闭包、把业务 future 喂进去、失败时先调 `on_failure_extra`（用来发本业务的 partial done）再走 `finalize_failed_long_task`。dedup / mod_scan / mod_duplicate / mod_version 四个长任务都走这套；pixiv 是例外——它内部已经统一终态收尾（`finalize_done`/`finalize_failed`），命令层只 spawn 不做兜底，否则失败会发两次 `Failed`。
 6. **路径**：`std::fs` 入参一律 `to_extended_length_path`；返回前端的路径一律 `to_user_friendly_path`。
 7. **并发**：线程数从 `op_pipeline::resolve_thread_count` 取，不要 inline 读 `settings.thread_count`。
 8. **文件名**：用 `utils::filename` 里的函数，不要自己实现一份。
@@ -536,4 +536,4 @@ Mod 各面板（Rename / Organize / Duplicate / Version / Scan）与去重分组
 ### 非配置常量（编译期硬编码）
 
 - 前端：`src/constants/app.ts`（`DEFAULT_LOG_MAX_LENGTH` 兜底、`LOG_FLUSH_INTERVAL`）、`task.ts`（`DEFAULT_EXTREME_ROW_THRESHOLD` 兜底 / `EXTREME_OVERSCAN` / `NORMAL_OVERSCAN` / 分组分页与渲染步长）、`theme.ts`、`preview.ts`。
-- 后端：`src-tauri/src/config.rs`（`HASH_QUEUE_SIZE` / `SCAN_QUEUE_SIZE` / `PARTIAL_BATCH_SIZE` / `PAUSE_SLEEP_MS`，加一组 `DEFAULT_*` 作为配置兜底）。
+- 后端：`src-tauri/src/config.rs`（`HASH_QUEUE_SIZE` / `PARTIAL_BATCH_SIZE` / `PAUSE_SLEEP_MS`，加一组 `DEFAULT_*` 作为配置兜底）。

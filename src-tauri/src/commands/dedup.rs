@@ -30,34 +30,23 @@ pub async fn start_dedup_task(
     }
 
     let (task_id, runtime) = state.create_task(task_id);
+    let state_arc = state.inner().clone();
 
-    let state_clone = state.inner().clone();
-    // 复制一份给 spawn 闭包外的失败收尾使用：`run_dedup` 会消费 `state_clone`，
-    // 失败路径需要独立的所有权来调 `finalize_failed_long_task`。
-    let state_for_finalize = state_clone.clone();
-    let app_clone = app.clone();
-    let task_id_clone = task_id.clone();
-
-    tauri::async_runtime::spawn(async move {
-        let result = dedup::run_dedup(
-            app_clone.clone(),
-            state_clone,
-            task_id_clone.clone(),
-            paths,
-            config,
-            runtime,
-        )
-        .await;
-
-        if let Err(err) = result {
-            events::finalize_failed_long_task(
-                &app_clone,
-                &state_for_finalize,
-                &task_id_clone,
-                &err.to_string(),
-            );
-        }
-    });
+    events::spawn_long_task(
+        app,
+        state_arc,
+        task_id.clone(),
+        move |app, state, task_id| async move {
+            // run_dedup 失败时已通过日志面板告诉用户原因；这里把 AppError 转字符串供
+            // finalize_failed_long_task 发到 task_failed 事件。
+            dedup::run_dedup(app, state, task_id, paths, config, runtime)
+                .await
+                .map_err(|e| e.to_string())
+        },
+        |_app, _task_id| {
+            // 去重没有 partial done 协议，失败路径不需要额外推送。
+        },
+    );
 
     Ok(task_id)
 }

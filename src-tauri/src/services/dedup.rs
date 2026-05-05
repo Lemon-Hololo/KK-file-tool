@@ -303,16 +303,13 @@ async fn run_dedup_inner(
     match scan_handle.await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => {
+            // Failed 状态由命令层 `finalize_failed_long_task` 统一发射，service 内不重复发。
             log.error(&format!("扫描任务失败: {e}"));
-            runtime.set_status(TaskStatus::Failed);
-            events::emit_state_changed(&app, &task_id, "Failed");
             return Err(crate::error::AppError::Internal(e));
         }
         Err(e) => {
             let err_msg = format!("扫描任务崩溃: {}", e);
             log.error(&err_msg);
-            runtime.set_status(TaskStatus::Failed);
-            events::emit_state_changed(&app, &task_id, "Failed");
             return Err(crate::error::AppError::Internal(err_msg));
         }
     }
@@ -435,13 +432,15 @@ async fn run_dedup_inner(
         events::emit_result_partial(&app, &task_id, &partial_buf, false);
     }
 
-    app_state.set_task_results(task_id.clone(), groups.clone());
-
     if runtime.is_cancelled() {
+        // 取消时不把半截分组结果留到内存：用户随后的"重做"应当看到空缓存，而不是
+        // 上次取消瞬间的不完整快照（前端可能据此误判为"还有待移动的重复组"）。
         runtime.set_status(TaskStatus::Cancelled);
         events::emit_state_changed(&app, &task_id, "Cancelled");
         return Ok(());
     }
+
+    app_state.set_task_results(task_id.clone(), groups.clone());
 
     if config.save_record_enabled {
         let entries: Vec<HashIndexEntry> = hash_for_record

@@ -149,13 +149,14 @@ impl AppState {
         self.tasks.lock().unwrap().remove(task_id);
     }
 
-    /// 是否存在运行中或暂停中的长任务。
+    /// 是否存在尚未走完终态收尾的长任务。
+    ///
+    /// 判定基于 tasks 表是否为空，而不是 `TaskStatus::Running | Paused`：取消后任务仍然
+    /// 可能在写库（哈希记录落盘 / 备份目录 rename 等），只有 `remove_task` 才是"真正
+    /// 结束"的可靠信号。`delete_database` 等需要文件独占的操作必须走这条更严格的判定，
+    /// 否则取消瞬间 + 删库会与正在 commit 的事务竞争。
     pub fn has_active_tasks(&self) -> bool {
-        self.tasks
-            .lock()
-            .unwrap()
-            .values()
-            .any(|runtime| matches!(runtime.status(), TaskStatus::Running | TaskStatus::Paused))
+        !self.tasks.lock().unwrap().is_empty()
     }
 
     /// 覆盖保存某个去重任务的当前结果。

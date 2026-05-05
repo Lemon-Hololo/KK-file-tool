@@ -36,6 +36,10 @@ pub const EMPTY_DIR_TABLES: OpRecordTables = OpRecordTables {
 ///
 /// `include_roots = false` 时只返回任务输入路径的子目录；这是默认安全策略，
 /// 避免用户只是想清理工作目录时把工作目录本身删掉。
+///
+/// 单条路径访问失败（不存在、无权限、不是目录等）只跳过该路径，不打断整批扫描——
+/// 与 dedup / suffix 的"warn-and-continue"语义对齐；只有当全部路径都被跳过、
+/// 没有任何候选时才返回错误，避免静默给出空结果。
 pub fn preview_empty_dirs(
     paths: &[String],
     include_roots: bool,
@@ -46,14 +50,22 @@ pub fn preview_empty_dirs(
 
     let mut result = vec![];
     let mut seen_roots = HashSet::new();
+    let mut visited_any = false;
+    let mut errors: Vec<String> = vec![];
 
     for root in paths {
         let root_path = Path::new(root);
         let root_ep = to_extended_length_path(root_path);
-        let metadata = std::fs::metadata(&root_ep)
-            .map_err(|e| AppError::Io(format!("无法访问路径 {root}: {e}")))?;
+        let metadata = match std::fs::metadata(&root_ep) {
+            Ok(m) => m,
+            Err(e) => {
+                errors.push(format!("无法访问路径 {root}: {e}"));
+                continue;
+            }
+        };
         if !metadata.is_dir() {
-            return Err(AppError::InvalidInput(format!("不是有效目录: {root}")));
+            errors.push(format!("不是有效目录: {root}"));
+            continue;
         }
 
         let root_key = cmp_key_case_insensitive(&root_ep);
@@ -61,7 +73,15 @@ pub fn preview_empty_dirs(
             continue;
         }
 
+        visited_any = true;
         collect_empty_dirs(&root_ep, 0, include_roots, &mut result);
+    }
+
+    if !visited_any {
+        // 全部路径都失败时把第一条错误抛出，避免 UI 拿到空数组误判为"没有空目录"。
+        return Err(AppError::InvalidInput(
+            errors.into_iter().next().unwrap_or_else(|| "无可用路径".to_string()),
+        ));
     }
 
     let mut seen = HashSet::new();
@@ -186,14 +206,30 @@ pub fn rollback_empty_dirs(
     item_ids: Option<Vec<i64>>,
     force_ignore_missing: bool,
 ) -> AppResult<EmptyDirRollbackResponse> {
-    let selected = selected_success_items(db_path, record_id, item_ids.clone())?;
-    let check = check_rollback(db_path, record_id, item_ids)?;
-    if !force_ignore_missing && !check.missing_paths.is_empty() {
+    let selected = selected_success_items(db_path, record_id, item_ids)?;
+
+    // 在已经选好的 items 列表上原地做 check，避免再调一次 check_rollback 触发
+    // 重复的 SQL 查询（之前 selected_success_items + check_rollback 各拉一次 detail）。
+    let mut blocked: Vec<String> = vec![];
+    let mut existing = 0usize;
+    for item in &selected {
+        let path = Path::new(&item.old_path);
+        let ep = to_extended_length_path(path);
+        if ep.is_dir() {
+            existing += 1;
+        } else if ep.exists() {
+            blocked.push(item.old_path.clone());
+        }
+    }
+
+    if !force_ignore_missing && !blocked.is_empty() {
         return Err(AppError::InvalidInput(format!(
             "存在 {} 个路径被非目录文件占用，请确认后使用 forceIgnoreMissing=true 再执行",
-            check.missing_paths.len()
+            blocked.len()
         )));
     }
+    let total_selected = selected.len();
+    let _ = existing;
 
     let mut results = Vec::with_capacity(selected.len());
     for item in selected {
@@ -263,7 +299,7 @@ pub fn rollback_empty_dirs(
 
     Ok(EmptyDirRollbackResponse {
         record_id: record_id.to_string(),
-        total_selected: check.total_selected,
+        total_selected,
         success,
         failed,
         skipped_missing: 0,

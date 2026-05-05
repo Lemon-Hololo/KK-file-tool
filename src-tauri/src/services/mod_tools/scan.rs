@@ -171,6 +171,9 @@ pub async fn run_scan(
     Ok(())
 }
 
+// emit_final 把"扫描完成"前后要发的 4 个事件 + 1 条总结日志收敛到一处，参数
+// 自然超 7 个；包成结构体只是把 8 个 setter 换成 8 个 setter，没有可读性收益。
+#[allow(clippy::too_many_arguments)]
 fn emit_final(
     app: &AppHandle,
     task_id: &str,

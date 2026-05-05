@@ -11,10 +11,16 @@
 //!
 //! 这样既避免同时持有"全量解析结果 + 全量日志事件"，也避免之前"先扫一遍数总数、
 //! 再扫一遍读 manifest"重复 IO 的浪费。
+//!
+//! 重复 / 不同版本两条业务的扫描骨架结构完全相同，差别只在三处：分组 key、
+//! "本组是否成立"的判定（重复 ≥ 2 个文件 / 版本 > 1）、聚合后的展示结构。
+//! 抽象为 [`GroupSpec`] trait 后，长任务函数 [`run_grouped_scan`] 与同步预览
+//! [`preview_grouped`] 全部共享同一份实现，避免两份近乎相同的 200+ 行代码漂移。
 
 use std::{
     cmp::Ordering,
     collections::{hash_map::Entry, BTreeSet, HashMap, HashSet},
+    hash::Hash,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -49,52 +55,153 @@ use crate::{
 
 const PROCESS_CHUNK_SIZE: usize = 256;
 
+/// 描述一类"按 manifest 字段分组"的扫描业务的差异点。
+///
+/// `Key`：分组键（重复 = `(guid, author, version)`，版本 = `(guid, author)`）。
+/// `Group`：发到前端的分组结构（重复 = [`ModDuplicateGroup`]，版本 = [`ModVersionGroup`]）。
+trait GroupSpec {
+    type Key: Clone + Eq + Hash;
+    type Group: Clone;
+
+    /// 从 manifest 字段计算分组 key。
+    fn key(file: &ModIdentityFile) -> Self::Key;
+
+    /// 把累积的若干文件 finalize 成对外的 group；不成立时返回 None（重复要求 ≥ 2 个文件、
+    /// 版本要求 ≥ 2 个不同版本号）。返回的 `Vec` 内部已按业务约定排序。
+    fn finalize(key: Self::Key, files: Vec<ModIdentityFile>) -> Option<Self::Group>;
+
+    /// 取出对外 group 的 group_id，用作排序与稳定标识。
+    fn group_id(group: &Self::Group) -> &str;
+
+    /// 推送本批增量结果给前端。
+    fn emit_partial(app: &AppHandle, task_id: &str, groups: Vec<Self::Group>, done: bool);
+
+    /// 进度阶段标识（`stages::MOD_DUPLICATE` / `stages::MOD_VERSION`）。
+    fn stage() -> &'static str;
+
+    /// 任务完成后给日志面板的总结串。
+    fn completion_summary(group_count: usize) -> String;
+
+    /// 当前 slot 是否已经"成立"——用作 `count_groups` 决定日志面板显示的 N。
+    fn slot_is_group(slot: &CollectSlot<ModIdentityFile>) -> bool;
+}
+
+struct DuplicateSpec;
+struct VersionSpec;
+
+impl GroupSpec for DuplicateSpec {
+    type Key = (String, String, String);
+    type Group = ModDuplicateGroup;
+
+    fn key(file: &ModIdentityFile) -> Self::Key {
+        (file.guid.clone(), file.author.clone(), file.version.clone())
+    }
+
+    fn finalize((guid, author, version): Self::Key, mut files: Vec<ModIdentityFile>) -> Option<Self::Group> {
+        if files.len() <= 1 {
+            return None;
+        }
+        files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+        Some(ModDuplicateGroup {
+            group_id: duplicate_group_id(&guid, &author, &version),
+            guid,
+            author,
+            version,
+            files,
+        })
+    }
+
+    fn group_id(group: &Self::Group) -> &str {
+        &group.group_id
+    }
+
+    fn emit_partial(app: &AppHandle, task_id: &str, groups: Vec<Self::Group>, done: bool) {
+        events::emit_mod_duplicate_partial(
+            app,
+            &ModDuplicatePartialPayload {
+                task_id: task_id.to_string(),
+                groups,
+                done,
+            },
+        );
+    }
+
+    fn stage() -> &'static str {
+        stages::MOD_DUPLICATE
+    }
+
+    fn completion_summary(group_count: usize) -> String {
+        format!("重复 MOD 检查完成：匹配 {group_count} 组")
+    }
+
+    fn slot_is_group(slot: &CollectSlot<ModIdentityFile>) -> bool {
+        slot.len() > 1
+    }
+}
+
+impl GroupSpec for VersionSpec {
+    type Key = (String, String);
+    type Group = ModVersionGroup;
+
+    fn key(file: &ModIdentityFile) -> Self::Key {
+        (file.guid.clone(), file.author.clone())
+    }
+
+    fn finalize((guid, author): Self::Key, mut files: Vec<ModIdentityFile>) -> Option<Self::Group> {
+        let versions: BTreeSet<String> = files.iter().map(|f| f.version.clone()).collect();
+        if versions.len() <= 1 {
+            return None;
+        }
+        files.sort_by(|a, b| {
+            compare_versions(&b.version, &a.version)
+                .then_with(|| b.mtime.cmp(&a.mtime))
+                .then_with(|| a.file_path.cmp(&b.file_path))
+        });
+        let latest_version = files.first().map(|f| f.version.clone()).unwrap_or_default();
+        Some(ModVersionGroup {
+            group_id: version_group_id(&guid, &author),
+            guid,
+            author,
+            latest_version,
+            files,
+        })
+    }
+
+    fn group_id(group: &Self::Group) -> &str {
+        &group.group_id
+    }
+
+    fn emit_partial(app: &AppHandle, task_id: &str, groups: Vec<Self::Group>, done: bool) {
+        events::emit_mod_version_partial(
+            app,
+            &ModVersionPartialPayload {
+                task_id: task_id.to_string(),
+                groups,
+                done,
+            },
+        );
+    }
+
+    fn stage() -> &'static str {
+        stages::MOD_VERSION
+    }
+
+    fn completion_summary(group_count: usize) -> String {
+        format!("不同版本 MOD 检查完成：匹配 {group_count} 组")
+    }
+
+    fn slot_is_group(slot: &CollectSlot<ModIdentityFile>) -> bool {
+        slot.version_count() > 1
+    }
+}
+
 /// 同步预览重复 MOD；保留给非长任务调用路径。
 pub fn preview_mod_duplicates(
     db_path: &Path,
     paths: &[String],
     log: Option<TaskLogContext>,
 ) -> AppResult<Vec<ModDuplicateGroup>> {
-    let runtime = TaskRuntime::default();
-    let mut grouped: HashMap<(String, String, String), CollectSlot<ModIdentityFile>> =
-        HashMap::new();
-
-    process_candidates(
-        db_path,
-        paths,
-        &runtime,
-        log.as_ref(),
-        |batch, _processed| {
-            for file in batch {
-                push_collect_slot(
-                    &mut grouped,
-                    (file.guid.clone(), file.author.clone(), file.version.clone()),
-                    file,
-                );
-            }
-        },
-    )
-    .map_err(AppError::Internal)?;
-
-    let mut groups: Vec<ModDuplicateGroup> = grouped
-        .into_iter()
-        .filter_map(|((guid, author, version), slot)| {
-            let mut files = slot.into_vec();
-            if files.len() <= 1 {
-                return None;
-            }
-            files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
-            Some(ModDuplicateGroup {
-                group_id: duplicate_group_id(&guid, &author, &version),
-                guid,
-                author,
-                version,
-                files,
-            })
-        })
-        .collect();
-    groups.sort_by(|a, b| a.group_id.cmp(&b.group_id));
-    Ok(groups)
+    preview_grouped::<DuplicateSpec>(db_path, paths, log)
 }
 
 /// 同步预览不同版本 MOD；保留给非长任务调用路径。
@@ -103,8 +210,17 @@ pub fn preview_mod_versions(
     paths: &[String],
     log: Option<TaskLogContext>,
 ) -> AppResult<Vec<ModVersionGroup>> {
+    preview_grouped::<VersionSpec>(db_path, paths, log)
+}
+
+/// 同步预览的通用实现：扫候选 → 解析 manifest → 一次性 finalize 全部 slot。
+fn preview_grouped<S: GroupSpec>(
+    db_path: &Path,
+    paths: &[String],
+    log: Option<TaskLogContext>,
+) -> AppResult<Vec<S::Group>> {
     let runtime = TaskRuntime::default();
-    let mut grouped: HashMap<(String, String), CollectSlot<ModIdentityFile>> = HashMap::new();
+    let mut grouped: HashMap<S::Key, CollectSlot<ModIdentityFile>> = HashMap::new();
 
     process_candidates(
         db_path,
@@ -113,40 +229,17 @@ pub fn preview_mod_versions(
         log.as_ref(),
         |batch, _processed| {
             for file in batch {
-                push_collect_slot(&mut grouped, (file.guid.clone(), file.author.clone()), file);
+                push_collect_slot(&mut grouped, S::key(&file), file);
             }
         },
     )
     .map_err(AppError::Internal)?;
 
-    let mut groups: Vec<ModVersionGroup> = grouped
+    let mut groups: Vec<S::Group> = grouped
         .into_iter()
-        .filter_map(|((guid, author), slot)| {
-            let mut files = slot.into_vec();
-            let versions: BTreeSet<String> =
-                files.iter().map(|file| file.version.clone()).collect();
-            if versions.len() <= 1 {
-                return None;
-            }
-            files.sort_by(|a, b| {
-                compare_versions(&b.version, &a.version)
-                    .then_with(|| b.mtime.cmp(&a.mtime))
-                    .then_with(|| a.file_path.cmp(&b.file_path))
-            });
-            let latest_version = files
-                .first()
-                .map(|file| file.version.clone())
-                .unwrap_or_default();
-            Some(ModVersionGroup {
-                group_id: version_group_id(&guid, &author),
-                guid,
-                author,
-                latest_version,
-                files,
-            })
-        })
+        .filter_map(|(key, slot)| S::finalize(key, slot.into_vec()))
         .collect();
-    groups.sort_by(|a, b| a.group_id.cmp(&b.group_id));
+    groups.sort_by(|a, b| S::group_id(a).cmp(S::group_id(b)));
     Ok(groups)
 }
 
@@ -194,101 +287,8 @@ pub async fn run_duplicate_scan(
     paths: Vec<String>,
     runtime: Arc<TaskRuntime>,
 ) -> Result<(), String> {
-    let log = TaskLogContext::new(&app, &task_id);
-    runtime.set_status(TaskStatus::Running);
-    events::emit_state_changed(&app, &task_id, "Running");
-    log.info("开始检查重复 MOD");
-
-    let mut grouped: HashMap<(String, String, String), CollectSlot<ModIdentityFile>> =
-        HashMap::new();
-
-    process_candidates(
-        &app_state.db_path,
-        &paths,
-        &runtime,
-        Some(&log),
-        |batch, processed| {
-            let mut touched = HashSet::new();
-            for file in batch {
-                touched.insert((file.guid.clone(), file.author.clone(), file.version.clone()));
-                push_collect_slot(
-                    &mut grouped,
-                    (file.guid.clone(), file.author.clone(), file.version.clone()),
-                    file,
-                );
-            }
-
-            let partial = touched
-                .into_iter()
-                .filter_map(|(guid, author, version)| {
-                    let slot = grouped.get(&(guid.clone(), author.clone(), version.clone()))?;
-                    let mut files = slot.clone().into_vec();
-                    if files.len() <= 1 {
-                        return None;
-                    }
-                    files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
-                    Some(ModDuplicateGroup {
-                        group_id: duplicate_group_id(&guid, &author, &version),
-                        guid,
-                        author,
-                        version,
-                        files,
-                    })
-                })
-                .collect::<Vec<_>>();
-
-            if !partial.is_empty() {
-                events::emit_mod_duplicate_partial(
-                    &app,
-                    &ModDuplicatePartialPayload {
-                        task_id: task_id.clone(),
-                        groups: partial,
-                        done: false,
-                    },
-                );
-            }
-
-            events::emit_progress(
-                &app,
-                &task_id,
-                stages::MOD_DUPLICATE,
-                processed.done,
-                processed.total,
-            );
-        },
-    )?;
-
-    if runtime.is_cancelled() {
-        runtime.set_status(TaskStatus::Cancelled);
-        events::emit_state_changed(&app, &task_id, "Cancelled");
-        events::emit_mod_duplicate_partial(
-            &app,
-            &ModDuplicatePartialPayload {
-                task_id: task_id.clone(),
-                groups: vec![],
-                done: true,
-            },
-        );
-        app_state.remove_task(&task_id);
-        return Ok(());
-    }
-
-    runtime.set_status(TaskStatus::Completed);
-    events::emit_state_changed(&app, &task_id, "Completed");
-    events::emit_mod_duplicate_partial(
-        &app,
-        &ModDuplicatePartialPayload {
-            task_id: task_id.clone(),
-            groups: vec![],
-            done: true,
-        },
-    );
-    log.info(&format!(
-        "重复 MOD 检查完成：匹配 {} 组",
-        count_duplicate_groups(&grouped)
-    ));
-    app_state.remove_task(&task_id);
-    Ok(())
+    run_grouped_scan::<DuplicateSpec>(app, app_state, task_id, paths, runtime, "开始检查重复 MOD")
+        .await
 }
 
 /// 后台运行不同版本 MOD 检查任务。
@@ -299,12 +299,28 @@ pub async fn run_version_scan(
     paths: Vec<String>,
     runtime: Arc<TaskRuntime>,
 ) -> Result<(), String> {
+    run_grouped_scan::<VersionSpec>(app, app_state, task_id, paths, runtime, "开始检查不同版本 MOD")
+        .await
+}
+
+/// 通用分组扫描长任务实现：扫候选 → 分块解析 manifest → 增量推送 partial → 终态收尾。
+///
+/// 取消语义：候选阶段每条 entry 检查、分块阶段每个 chunk 边界检查；
+/// 取消后会发一次 `done=true` 的空 partial 让前端关闭 running 状态。
+async fn run_grouped_scan<S: GroupSpec>(
+    app: AppHandle,
+    app_state: Arc<AppState>,
+    task_id: String,
+    paths: Vec<String>,
+    runtime: Arc<TaskRuntime>,
+    start_msg: &str,
+) -> Result<(), String> {
     let log = TaskLogContext::new(&app, &task_id);
     runtime.set_status(TaskStatus::Running);
     events::emit_state_changed(&app, &task_id, "Running");
-    log.info("开始检查不同版本 MOD");
+    log.info(start_msg);
 
-    let mut grouped: HashMap<(String, String), CollectSlot<ModIdentityFile>> = HashMap::new();
+    let mut grouped: HashMap<S::Key, CollectSlot<ModIdentityFile>> = HashMap::new();
 
     process_candidates(
         &app_state.db_path,
@@ -312,93 +328,43 @@ pub async fn run_version_scan(
         &runtime,
         Some(&log),
         |batch, processed| {
-            let mut touched = HashSet::new();
+            // 本批次涉及的所有 key 集合：partial 只重新构造这些组，不扫整张 map。
+            let mut touched: HashSet<S::Key> = HashSet::new();
             for file in batch {
-                touched.insert((file.guid.clone(), file.author.clone()));
-                push_collect_slot(&mut grouped, (file.guid.clone(), file.author.clone()), file);
+                let key = S::key(&file);
+                touched.insert(key.clone());
+                push_collect_slot(&mut grouped, key, file);
             }
 
-            let partial = touched
+            let partial: Vec<S::Group> = touched
                 .into_iter()
-                .filter_map(|(guid, author)| {
-                    let slot = grouped.get(&(guid.clone(), author.clone()))?;
-                    let mut files = slot.clone().into_vec();
-                    let versions: BTreeSet<String> =
-                        files.iter().map(|file| file.version.clone()).collect();
-                    if versions.len() <= 1 {
-                        return None;
-                    }
-
-                    files.sort_by(|a, b| {
-                        compare_versions(&b.version, &a.version)
-                            .then_with(|| b.mtime.cmp(&a.mtime))
-                            .then_with(|| a.file_path.cmp(&b.file_path))
-                    });
-                    let latest_version = files
-                        .first()
-                        .map(|file| file.version.clone())
-                        .unwrap_or_default();
-
-                    Some(ModVersionGroup {
-                        group_id: version_group_id(&guid, &author),
-                        guid,
-                        author,
-                        latest_version,
-                        files,
-                    })
+                .filter_map(|key| {
+                    let slot = grouped.get(&key)?;
+                    S::finalize(key, slot.clone().into_vec())
                 })
-                .collect::<Vec<_>>();
+                .collect();
 
             if !partial.is_empty() {
-                events::emit_mod_version_partial(
-                    &app,
-                    &ModVersionPartialPayload {
-                        task_id: task_id.clone(),
-                        groups: partial,
-                        done: false,
-                    },
-                );
+                S::emit_partial(&app, &task_id, partial, false);
             }
 
-            events::emit_progress(
-                &app,
-                &task_id,
-                stages::MOD_VERSION,
-                processed.done,
-                processed.total,
-            );
+            events::emit_progress(&app, &task_id, S::stage(), processed.done, processed.total);
         },
     )?;
 
-    if runtime.is_cancelled() {
+    let cancelled = runtime.is_cancelled();
+    if cancelled {
         runtime.set_status(TaskStatus::Cancelled);
         events::emit_state_changed(&app, &task_id, "Cancelled");
-        events::emit_mod_version_partial(
-            &app,
-            &ModVersionPartialPayload {
-                task_id: task_id.clone(),
-                groups: vec![],
-                done: true,
-            },
-        );
-        app_state.remove_task(&task_id);
-        return Ok(());
+    } else {
+        runtime.set_status(TaskStatus::Completed);
+        events::emit_state_changed(&app, &task_id, "Completed");
     }
-
-    runtime.set_status(TaskStatus::Completed);
-    events::emit_state_changed(&app, &task_id, "Completed");
-    events::emit_mod_version_partial(
-        &app,
-        &ModVersionPartialPayload {
-            task_id: task_id.clone(),
-            groups: vec![],
-            done: true,
-        },
-    );
-    log.info(&format!(
-        "不同版本 MOD 检查完成：匹配 {} 组",
-        count_version_groups(&grouped)
-    ));
+    S::emit_partial(&app, &task_id, vec![], true);
+    if !cancelled {
+        let count = grouped.values().filter(|s| S::slot_is_group(s)).count();
+        log.info(&S::completion_summary(count));
+    }
     app_state.remove_task(&task_id);
     Ok(())
 }
@@ -530,12 +496,21 @@ fn apply_mod_delete(
     let prepared = backup::prepare_mod_backup(db_path, selected_file_paths)?;
 
     if let Some(log) = &log {
-        for (old_path, _) in &prepared.pairs {
-            if prepared.rollback_enabled {
-                log.info(&format!("准备删除 Mod（备份）: {old_path}"));
-            } else {
-                log.info(&format!("准备删除 Mod（不备份）: {old_path}"));
-            }
+        // N 条选中 = N 条日志；之前是逐条 info！，对 1w 选择明显刷屏。改为一条总结 +
+        // 抽样若干条，体现规模即可，详情走记录详情页。
+        let total = prepared.pairs.len();
+        let action = if prepared.rollback_enabled {
+            "删除并备份"
+        } else {
+            "直接删除（不备份）"
+        };
+        log.info(&format!("准备{action} {total} 个 Mod"));
+        const SAMPLE: usize = 5;
+        for (old_path, _) in prepared.pairs.iter().take(SAMPLE) {
+            log.info(&format!("  · {old_path}"));
+        }
+        if total > SAMPLE {
+            log.info(&format!("  …（其余 {} 条略，详情见记录）", total - SAMPLE));
         }
     }
 
@@ -602,21 +577,6 @@ fn duplicate_group_id(guid: &str, author: &str, version: &str) -> String {
 
 fn version_group_id(guid: &str, author: &str) -> String {
     format!("{guid}\u{1f}{author}")
-}
-
-fn count_duplicate_groups(
-    grouped: &HashMap<(String, String, String), CollectSlot<ModIdentityFile>>,
-) -> usize {
-    grouped.values().filter(|slot| slot.len() > 1).count()
-}
-
-fn count_version_groups(
-    grouped: &HashMap<(String, String), CollectSlot<ModIdentityFile>>,
-) -> usize {
-    grouped
-        .values()
-        .filter(|slot| slot.version_count() > 1)
-        .count()
 }
 
 #[derive(Clone)]

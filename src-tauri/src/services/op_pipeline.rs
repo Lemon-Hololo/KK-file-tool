@@ -18,6 +18,12 @@
 //! 并发度统一由 [`resolve_thread_count`] 从用户设置读取。`parallel_move` /
 //! `check_rollback` / `rollback` 均构造临时 rayon 线程池执行并行操作，
 //! 避免影响全局默认池。
+//!
+//! # 关于 `too_many_arguments`
+//! 流水线核心 helper 都至少要 7+ 个参数：db 路径 + 表描述 + 业务字段 + 三类
+//! 数据集合 + 各种执行控制参数。把它们打包成结构体只会让调用方把 9 个 setter
+//! 写成 9 行 builder——读起来更糟。统一在模块级 allow，不再逐个加属性。
+#![allow(clippy::too_many_arguments)]
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -337,7 +343,9 @@ pub fn persist_apply_results(
         created_at,
     )?;
 
-    let now = Local::now().timestamp();
+    // 同一调用里 record 的 created_at 与 items 的 updated_at 取同一时刻：差几毫秒
+    // 在业务上没区别，但是统一基准让"列表里看到的 record 时间 == items 的初始时间"
+    // 这一直觉成立。
     let item_ids = op_record_repo::batch_insert_items(
         db_path,
         tables,
@@ -346,7 +354,7 @@ pub fn persist_apply_results(
             .iter()
             .map(|(o, n, ok, msg)| (o.as_str(), n.as_str(), *ok, msg.as_deref()))
             .collect::<Vec<_>>(),
-        now,
+        created_at,
     )?;
 
     let mut items = Vec::with_capacity(results.len());
@@ -534,7 +542,6 @@ pub fn rollback(
                         item,
                         status: "skipped_missing",
                         message: None,
-                        conflict: false,
                     };
                 };
 
@@ -547,7 +554,6 @@ pub fn rollback(
                                 item,
                                 status: "failed",
                                 message: Some(e.to_string()),
-                                conflict: false,
                             };
                         }
                     }
@@ -569,14 +575,12 @@ pub fn rollback(
                             item,
                             status: "success",
                             message,
-                            conflict,
                         }
                     }
                     Err(e) => RollbackOutcome {
                         item,
                         status: "failed",
                         message: Some(e),
-                        conflict: false,
                     },
                 }
             })
@@ -664,6 +668,4 @@ struct RollbackOutcome {
     item: op_record_repo::OpRecordItem,
     status: &'static str,
     message: Option<String>,
-    #[allow(dead_code)]
-    conflict: bool,
 }

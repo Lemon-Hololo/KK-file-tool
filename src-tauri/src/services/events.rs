@@ -121,3 +121,40 @@ pub fn finalize_failed_long_task(
     emit_task_failed(app, task_id, err);
     state.remove_task(task_id);
 }
+
+/// 启动一个长任务并安装统一的失败收尾。
+///
+/// 这是命令层的薄包装：克隆 `state` / `app` / `task_id` 给 spawn 闭包，
+/// 等业务 future 返回 `Err(err)` 时先调可选的 `on_failure_extra`（用来发该业务
+/// 自己的 partial done 信号），再调 [`finalize_failed_long_task`] 把状态切到
+/// Failed 并清理运行表。成功路径业务函数自己负责终态收尾。
+///
+/// 使用场景：dedup、mod_scan、mod_duplicate、mod_version、pixiv_tag 的
+/// `start_*_task` 命令都走相同模板——先 `state.create_task(task_id)` 拿到
+/// `(task_id, runtime)`，再把 `move ||` 的业务闭包 `fut` 喂给本 helper。
+///
+/// `fut` 的类型签名意味着业务函数必须接受 `(AppHandle, Arc<AppState>, String)` 三元组，
+/// 把它们和自己额外的参数（paths / keyword 等）一起 capture 进去。命令层只剩"组装
+/// 参数 + create_task + 调 spawn_long_task"三行。
+pub fn spawn_long_task<Fut, Make, Extra>(
+    app: AppHandle,
+    state: Arc<AppState>,
+    task_id: String,
+    make_future: Make,
+    on_failure_extra: Extra,
+) where
+    Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
+    Make: FnOnce(AppHandle, Arc<AppState>, String) -> Fut + Send + 'static,
+    Extra: FnOnce(&AppHandle, &str) + Send + 'static,
+{
+    let app_clone = app.clone();
+    let state_clone = state.clone();
+    let task_id_clone = task_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = make_future(app_clone.clone(), state_clone.clone(), task_id_clone.clone()).await;
+        if let Err(err) = result {
+            on_failure_extra(&app_clone, &task_id_clone);
+            finalize_failed_long_task(&app_clone, &state_clone, &task_id_clone, &err);
+        }
+    });
+}

@@ -105,33 +105,27 @@ pub async fn start_mod_duplicate_task(
     }
 
     let (task_id, runtime) = state.create_task(task_id);
+    let state_arc = state.inner().clone();
 
-    let state_clone = state.inner().clone();
-    let app_clone = app.clone();
-    let task_id_clone = task_id.clone();
-
-    tauri::async_runtime::spawn(async move {
-        let result = cleanup::run_duplicate_scan(
-            app_clone.clone(),
-            state_clone.clone(),
-            task_id_clone.clone(),
-            paths,
-            runtime,
-        )
-        .await;
-
-        if let Err(err) = result {
+    events::spawn_long_task(
+        app,
+        state_arc,
+        task_id.clone(),
+        move |app, state, task_id| async move {
+            cleanup::run_duplicate_scan(app, state, task_id, paths, runtime).await
+        },
+        |app, task_id| {
+            // 失败时仍要发一次 partial done，让前端关闭"扫描中"的 spinner。
             events::emit_mod_duplicate_partial(
-                &app_clone,
+                app,
                 &ModDuplicatePartialPayload {
-                    task_id: task_id_clone.clone(),
+                    task_id: task_id.to_string(),
                     groups: vec![],
                     done: true,
                 },
             );
-            events::finalize_failed_long_task(&app_clone, &state_clone, &task_id_clone, &err);
-        }
-    });
+        },
+    );
 
     Ok(task_id)
 }
@@ -182,33 +176,26 @@ pub async fn start_mod_version_task(
     }
 
     let (task_id, runtime) = state.create_task(task_id);
+    let state_arc = state.inner().clone();
 
-    let state_clone = state.inner().clone();
-    let app_clone = app.clone();
-    let task_id_clone = task_id.clone();
-
-    tauri::async_runtime::spawn(async move {
-        let result = cleanup::run_version_scan(
-            app_clone.clone(),
-            state_clone.clone(),
-            task_id_clone.clone(),
-            paths,
-            runtime,
-        )
-        .await;
-
-        if let Err(err) = result {
+    events::spawn_long_task(
+        app,
+        state_arc,
+        task_id.clone(),
+        move |app, state, task_id| async move {
+            cleanup::run_version_scan(app, state, task_id, paths, runtime).await
+        },
+        |app, task_id| {
             events::emit_mod_version_partial(
-                &app_clone,
+                app,
                 &ModVersionPartialPayload {
-                    task_id: task_id_clone.clone(),
+                    task_id: task_id.to_string(),
                     groups: vec![],
                     done: true,
                 },
             );
-            events::finalize_failed_long_task(&app_clone, &state_clone, &task_id_clone, &err);
-        }
-    });
+        },
+    );
 
     Ok(task_id)
 }
@@ -342,26 +329,19 @@ pub async fn start_mod_scan_task(
     }
 
     let (task_id, runtime) = state.create_task(task_id);
+    let state_arc = state.inner().clone();
 
-    let state_clone = state.inner().clone();
-    let app_clone = app.clone();
-    let task_id_clone = task_id.clone();
-
-    tauri::async_runtime::spawn(async move {
-        let result = scan::run_scan(
-            app_clone.clone(),
-            state_clone.clone(),
-            task_id_clone.clone(),
-            paths,
-            keyword,
-            runtime,
-        )
-        .await;
-
-        if let Err(err) = result {
-            events::finalize_failed_long_task(&app_clone, &state_clone, &task_id_clone, &err);
-        }
-    });
+    events::spawn_long_task(
+        app,
+        state_arc,
+        task_id.clone(),
+        move |app, state, task_id| async move {
+            scan::run_scan(app, state, task_id, paths, keyword, runtime).await
+        },
+        |_app, _task_id| {
+            // mod 扫描没有 partial 协议，失败不需额外推送。
+        },
+    );
 
     Ok(task_id)
 }
