@@ -187,8 +187,9 @@ pub fn apply_mod_modify_version(
     }
 
     // 同 cleanup：读 settings → 生成 record_id → 算备份对，全部交给
-    // backup::prepare_mod_backup 处理。多个源目录同名 zipmod 撞名也由它兜底。
-    let prepared = backup::prepare_mod_backup(db_path, selected_file_paths)?;
+    // backup::prepare_mod_backup 处理。多个源目录同名 zipmod 撞名 + 用户开启
+    // "保留源目录结构"时的子目录布局也由它兜底。
+    let prepared = backup::prepare_mod_backup(db_path, selected_file_paths, paths)?;
 
     let keyword_arc = Arc::new(keyword_trim);
     let executor = {

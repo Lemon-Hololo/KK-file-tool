@@ -45,15 +45,22 @@ export function getMoveSummary(selectedFiles: string[], moveTargetPath?: string 
   });
 }
 
-/** 执行移动，返回报告并更新内存中的重复组。 */
+/**
+ * 执行移动，返回报告并更新内存中的重复组。
+ *
+ * `sourcePaths` 是当前任务的输入路径，仅在用户开启了"保留源目录结构"设置时被后端
+ * 用来计算每个文件的相对子目录；可选参数，未传按平铺移动。
+ */
 export function applyMoveAction(
   taskId: string,
   selectedFiles: string[],
-  moveTargetPath?: string | null
+  moveTargetPath?: string | null,
+  sourcePaths?: string[] | null
 ) {
   return invokeCmd<MoveActionResponse>("apply_move_action", {
     taskId,
     selectedFiles,
-    moveTargetPath: moveTargetPath ?? null
+    moveTargetPath: moveTargetPath ?? null,
+    sourcePaths: sourcePaths ?? null
   });
 }

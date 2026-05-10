@@ -86,11 +86,20 @@ export const useTaskStore = defineStore("task", {
       runtimeStore.setRunningTask(taskId);
     },
 
-    async moveSelected(selectedFiles: string[], moveTargetPath?: string | null) {
+    async moveSelected(
+      selectedFiles: string[],
+      moveTargetPath?: string | null,
+      sourcePaths?: string[] | null
+    ) {
       const runtimeStore = useRuntimeStore();
       if (!runtimeStore.taskId || !selectedFiles.length) return null;
 
-      const resp = await applyMoveAction(runtimeStore.taskId, selectedFiles, moveTargetPath || null);
+      const resp = await applyMoveAction(
+        runtimeStore.taskId,
+        selectedFiles,
+        moveTargetPath || null,
+        sourcePaths ?? null
+      );
       this.latestMoveReport = resp.report;
       this.resultGroups = resp.updatedGroups ?? [];
       return resp as MoveActionResponse;

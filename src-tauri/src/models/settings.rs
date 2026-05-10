@@ -8,8 +8,9 @@ use crate::config::{
     DEFAULT_EXTREME_ROW_THRESHOLD, DEFAULT_IO_CONCURRENCY_MULTIPLIER, DEFAULT_KEEP_POLICY,
     DEFAULT_LOG_MAX_LENGTH, DEFAULT_MOD_ROLLBACK_ENABLED, DEFAULT_MOD_SCAN_KEYWORD,
     DEFAULT_PIXIV_PARTIAL_FLUSH_INTERVAL_MS, DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE,
-    DEFAULT_PIXIV_TAG_API_BASE, DEFAULT_SUFFIX_TARGET, DEFAULT_TEXT_PREVIEW_MAX_KB,
-    DEFAULT_THEME_MODE, DEFAULT_THREAD_COUNT, DEFAULT_ZIP_PREVIEW_MAX_ENTRIES,
+    DEFAULT_PIXIV_TAG_API_BASE, DEFAULT_PRESERVE_DIR_ON_MOVE, DEFAULT_SUFFIX_TARGET,
+    DEFAULT_TEXT_PREVIEW_MAX_KB, DEFAULT_THEME_MODE, DEFAULT_THREAD_COUNT,
+    DEFAULT_ZIP_PREVIEW_MAX_ENTRIES,
 };
 
 /// 持久化到 `app_settings` 单行表的用户设置。
@@ -24,6 +25,13 @@ use crate::config::{
 pub struct AppSettings {
     pub keep_policy: String,
     pub move_target_path: Option<String>,
+    /// 去重移动时是否保留文件相对源根目录的子目录结构。
+    ///
+    /// 关闭（默认）：选中文件全部平铺到 `<target_dir>/<task_id>/`，重名加 ` (N)`。
+    /// 开启：按文件 `absPath` 相对其所属任务输入根的相对路径作为子目录，
+    /// 落到 `<target_dir>/<task_id>/<rel_dir>/<file_name>`。前端调用方需把任务输入
+    /// 路径列表传入命令；找不到匹配根的孤儿文件降级为平铺，仍能完成移动。
+    pub preserve_dir_on_move: bool,
     pub save_record_enabled: bool,
     pub use_last_record_enabled: bool,
     pub include_current_folder_duplicates: bool,
@@ -105,6 +113,7 @@ impl Default for AppSettings {
         Self {
             keep_policy: DEFAULT_KEEP_POLICY.to_string(),
             move_target_path: None,
+            preserve_dir_on_move: DEFAULT_PRESERVE_DIR_ON_MOVE,
             save_record_enabled: true,
             use_last_record_enabled: false,
             include_current_folder_duplicates: true,

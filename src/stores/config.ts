@@ -25,6 +25,7 @@ export const useConfigStore = defineStore("config", {
     settings: {
       keepPolicy: "newest",
       moveTargetPath: "",
+      preserveDirOnMove: false,
       saveRecordEnabled: true,
       useLastRecordEnabled: false,
       includeCurrentFolderDuplicates: true,

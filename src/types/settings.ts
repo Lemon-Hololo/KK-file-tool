@@ -1,6 +1,15 @@
 export interface AppSettings {
   keepPolicy: "newest" | "oldest";
   moveTargetPath?: string | null;
+  /**
+   * 去重移动时是否保留文件相对源根目录的子目录结构。
+   *
+   * 关闭（默认）：选中文件全部平铺到 `<target_dir>/<task_id>/`。
+   * 开启：按文件 absPath 相对其所属任务输入根的相对路径作为子目录，
+   * 落到 `<target_dir>/<task_id>/<rel_dir>/<file_name>`。前端会把当前任务输入
+   * 路径列表一起传给后端命令；找不到匹配根的孤儿文件降级为平铺，仍能完成移动。
+   */
+  preserveDirOnMove: boolean;
   saveRecordEnabled: boolean;
   useLastRecordEnabled: boolean;
   includeCurrentFolderDuplicates: boolean;

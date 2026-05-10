@@ -114,6 +114,20 @@ function applyKeepModeAll(mode: "newest" | "oldest") {
   ElMessage.success(mode === "newest" ? "已全局应用：保留最新" : "已全局应用：保留最旧");
 }
 
+function clearAllSelection() {
+  let count = 0;
+  taskStore.resultGroups.forEach((g) => {
+    g.files.forEach((f) => {
+      if (f.selectedForMove) {
+        f.selectedForMove = false;
+        count++;
+      }
+    });
+  });
+  if (count > 0) ElMessage.info(`已取消 ${count} 个勾选`);
+  else ElMessage.info("当前没有已勾选的文件");
+}
+
 function selectByFolder(folderPath: string) {
   const prefix = folderPath.replace(/\\/g, "/").replace(/\/$/, "") + "/";
   let count = 0;
@@ -151,9 +165,11 @@ async function openMoveConfirm() {
 
 async function confirmMove() {
   confirmDialogVisible.value = false;
+  // 把任务输入路径传给后端，开启"保留源目录结构"时后端用它计算每个文件的相对子目录。
   const resp = await taskStore.moveSelected(
     selectedFiles.value,
-    configStore.settings.moveTargetPath || null
+    configStore.settings.moveTargetPath || null,
+    props.paths
   );
   if (!resp) return;
   reportDialogVisible.value = true;
@@ -242,6 +258,13 @@ async function confirmMove() {
       <template #actions>
         <el-button size="small" @click="applyKeepModeAll('newest')">保留最新</el-button>
         <el-button size="small" @click="applyKeepModeAll('oldest')">保留最旧</el-button>
+        <el-button
+          size="small"
+          :disabled="taskStore.selectedMoveCount === 0"
+          @click="clearAllSelection"
+        >
+          取消全部勾选
+        </el-button>
         <el-dropdown v-if="paths.length > 1" trigger="click" @command="selectByFolder">
           <el-button size="small">
             按文件夹勾选<el-icon style="margin-left:4px"><ArrowDown /></el-icon>

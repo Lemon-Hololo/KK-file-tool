@@ -26,9 +26,9 @@
 - **Mod 工具**：针对 Illusion 系列 `.zipmod` 的六类操作——
   - **重命名**：按 manifest.xml 的 `guid/author/version` 生成 `[author] guid-version.zipmod`；同批次撞名时按稳定顺序自动分配 ` (N)` 冲突后缀。
   - **归类**：按文件名首个 `[...]` 建子目录归类。
-  - **重复 MOD 检查**：按 `guid + author + version` 分组找重复，默认每组保留最新；删除时把文件移动到集中备份目录 `<backup_root>/<record_id>/<原文件名>`，备份路径写入记录可撤回。
-  - **不同版本 MOD 检查**：按 `guid + author` 分组找多个 `version`，默认保留最高版本；删除走同样的集中备份目录方案。
-  - **移除版本限制（modify）**：就地重写 zip 去掉指定 `<game>KEYWORD</game>` 标签；启用回滚时把原文件 `std::fs::copy` 备份到 `<backup_root>/<record_id>/<原文件名>` 后再原子替换原文件。
+  - **重复 MOD 检查**：按 `guid + author + version` 分组找重复，默认每组保留最新；删除时把文件移动到集中备份目录 `<backup_root>/<record_id>/<原文件名>`，备份路径写入记录可撤回。开启 `preserve_dir_on_move` 后变为 `<backup_root>/<record_id>/<rel>/<原文件名>`，与去重移动共用同一份相对路径算法。
+  - **不同版本 MOD 检查**：按 `guid + author` 分组找多个 `version`，默认保留最高版本；删除走同样的集中备份目录方案（含 `preserve_dir_on_move` 子目录布局）。
+  - **移除版本限制（modify）**：就地重写 zip 去掉指定 `<game>KEYWORD</game>` 标签；启用回滚时把原文件 `std::fs::copy` 备份到 `<backup_root>/<record_id>/<原文件名>`（开启 `preserve_dir_on_move` 时改为 `<backup_root>/<record_id>/<rel>/<原文件名>`）后再原子替换原文件。
   - **版本限制扫描**：长任务，扫描结果勾选后由"移除版本限制"落盘为 Mod 操作记录。
 
   这三类备份型操作受用户设置 `mod_rollback_enabled` 控制：默认开启，关闭后直接 `remove_file` / in-place 改写不留备份，记录主表 `rollback_enabled = 0`，UI 上"撤回"按钮置灰、后端命令也会拒绝。备份目录由 `mod_backup_dir` 配置，未配置时落到 `<exe_dir>/mod-backups`；与源文件跨卷时 `op_pipeline::rename_or_copy_delete` 自动退化为 copy + delete 兜底。重命名 / 归类不进入备份概念，永远可撤回。
@@ -169,6 +169,9 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 │   │       suffix.rs / empty_dirs.rs / mod_tools.rs / pixiv_tag.rs
 │   └── utils/
 │       └── mod.rs / path.rs / hash.rs / filename.rs / time.rs
+│           # path:     to_extended_length_path / to_user_friendly_path / cmp_key_case_insensitive /
+│           #          is_parent_of / prepare_source_roots / relative_subdir_for / parent_components_of
+│           #          （后三者是"保留源目录结构"的纯路径算法，去重移动 + Mod 备份共用）
 │           # filename: split_name_ext / resolve_conflict / resolve_conflict_with_reserved /
 │           #          strip_conflict_suffix / normalize_suffix / extract_bracket /
 │           #          sanitize_filename / normalize_brackets
@@ -521,6 +524,7 @@ Mod 各面板（Rename / Organize / Duplicate / Version / Scan）与去重分组
 |------|------|------|------|
 | `keep_policy` | str | `newest` | 去重 / 重复 MOD / 不同版本默认保留策略 |
 | `move_target_path` | str? | null | 重复文件移动目标目录 |
+| `preserve_dir_on_move` | bool | false | 移动 / 备份时是否保留文件相对源根的子目录结构。关闭=平铺到 `<target_dir>/<task_id>/`（去重）或 `<backup_root>/<record_id>/`（Mod 备份）；开启=按 absPath 相对任务输入根的相对路径建子目录，落到 `<target>/<rel>/<filename>`。去重移动由前端 `applyMoveAction` 把任务输入路径列表 `sourcePaths` 一并传给后端；Mod 重复删除 / 不同版本删除 / 移除版本限制三类备份型操作复用同一开关，由 `prepare_mod_backup` 接 `paths` 参数实现。两端共用 `utils::path::{prepare_source_roots, relative_subdir_for}` 这套纯路径算法；找不到匹配根的孤儿文件降级为平铺，仍能完成。 |
 | `save_record_enabled` | bool | true | 哈希索引是否入库 |
 | `use_last_record_enabled` | bool | false | 去重时是否复用上次哈希记录 |
 | `include_current_folder_duplicates` | bool | true | 是否统计当前目录内重复 |

@@ -492,8 +492,9 @@ fn apply_mod_delete(
     }
 
     // 读 settings → 生成 record_id → 构造 (原路径, 备份路径或空串) 列表，全部交给
-    // backup::prepare_mod_backup 处理；同批次同名 zipmod 的撞名也由它解决。
-    let prepared = backup::prepare_mod_backup(db_path, selected_file_paths)?;
+    // backup::prepare_mod_backup 处理；同批次同名 zipmod 的撞名 + 用户开启
+    // "保留源目录结构"时的子目录布局也由它解决。
+    let prepared = backup::prepare_mod_backup(db_path, selected_file_paths, paths)?;
 
     if let Some(log) = &log {
         // N 条选中 = N 条日志；之前是逐条 info！，对 1w 选择明显刷屏。改为一条总结 +

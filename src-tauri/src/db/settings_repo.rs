@@ -19,7 +19,8 @@ pub fn get_settings(db_path: &Path) -> AppResult<AppSettings> {
                   mod_rollback_enabled, mod_backup_dir,
                   pixiv_tag_api_base, pixiv_excluded_tags, pixiv_cookie, pixiv_proxy,
                   pixiv_use_translation, pixiv_rate_limit_per_minute,
-                  pixiv_partial_flush_interval_ms, pixiv_local_tag_translations
+                  pixiv_partial_flush_interval_ms, pixiv_local_tag_translations,
+                  preserve_dir_on_move
            FROM app_settings WHERE id = 1"#,
         [],
         |r| {
@@ -57,6 +58,7 @@ pub fn get_settings(db_path: &Path) -> AppResult<AppSettings> {
                 pixiv_use_translation: r.get::<_, i32>(20)? != 0,
                 pixiv_rate_limit_per_minute: r.get(21)?,
                 pixiv_partial_flush_interval_ms: r.get(22)?,
+                preserve_dir_on_move: r.get::<_, i32>(24)? != 0,
             })
         },
     )?;
@@ -81,7 +83,8 @@ pub fn save_settings(db_path: &Path, settings: &AppSettings) -> AppResult<()> {
                mod_rollback_enabled = ?, mod_backup_dir = ?,
                pixiv_tag_api_base = ?, pixiv_excluded_tags = ?, pixiv_cookie = ?, pixiv_proxy = ?,
                pixiv_use_translation = ?, pixiv_rate_limit_per_minute = ?,
-               pixiv_partial_flush_interval_ms = ?, pixiv_local_tag_translations = ?
+               pixiv_partial_flush_interval_ms = ?, pixiv_local_tag_translations = ?,
+               preserve_dir_on_move = ?
            WHERE id = 1"#,
         params![
             settings.keep_policy,
@@ -108,6 +111,7 @@ pub fn save_settings(db_path: &Path, settings: &AppSettings) -> AppResult<()> {
             settings.pixiv_rate_limit_per_minute,
             settings.pixiv_partial_flush_interval_ms,
             local_translations_json,
+            settings.preserve_dir_on_move as i32,
         ],
     )?;
     Ok(())

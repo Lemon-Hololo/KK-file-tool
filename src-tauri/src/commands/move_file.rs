@@ -53,6 +53,9 @@ pub fn get_move_summary(
 
 /// 执行移动：把 `selected_files` 移动到 `<target_dir>/<task_id>/`，写入报告，
 /// 更新内存中的重复组，发送 `move_report_ready` 事件。
+///
+/// `source_paths` 是当前任务的输入路径（前端 `paths`），仅在用户开启了
+/// `preserve_dir_on_move` 设置时被读取——决定每个文件落地的相对子目录。
 #[tauri::command]
 pub fn apply_move_action(
     app: AppHandle,
@@ -60,21 +63,26 @@ pub fn apply_move_action(
     task_id: String,
     selected_files: Vec<String>,
     move_target_path: Option<String>,
+    source_paths: Option<Vec<String>>,
 ) -> Result<MoveActionResponse, String> {
+    let settings = settings_repo::get_settings(&state.db_path).map_err(|e| e.to_string())?;
     let target_dir = match move_target_path {
         Some(v) if !v.trim().is_empty() => v,
-        _ => {
-            let settings =
-                settings_repo::get_settings(&state.db_path).map_err(|e| e.to_string())?;
-            match settings.move_target_path {
-                Some(v) if !v.trim().is_empty() => v,
-                _ => default_move_dir()?,
-            }
-        }
+        _ => match settings.move_target_path.as_ref() {
+            Some(v) if !v.trim().is_empty() => v.clone(),
+            _ => default_move_dir()?,
+        },
     };
 
     let task_target_dir = PathBuf::from(&target_dir).join(&task_id);
-    let move_result = move_file::move_selected_files(&task_target_dir, &selected_files);
+    // 没传 source_paths 等于空切片；service 在 preserve_structure = false 时不读它。
+    let roots = source_paths.unwrap_or_default();
+    let move_result = move_file::move_selected_files(
+        &task_target_dir,
+        &selected_files,
+        &roots,
+        settings.preserve_dir_on_move,
+    );
 
     let report = MoveReport {
         report_id: Uuid::new_v4().to_string(),

@@ -525,6 +525,19 @@ watchDebounced(
               </div>
 
               <div class="form-row">
+                <label class="label">保留源目录结构</label>
+                <div class="flex-input">
+                  <el-switch v-model="configStore.settings.preserveDirOnMove" />
+                  <span class="hint-inline">
+                    开启后移动会按文件相对任务输入根的子路径建子目录。例如输入
+                    D:\Game\test 时，D:\Game\test\unknown\foo.png 会落到
+                    &lt;目标&gt;\&lt;taskId&gt;\unknown\foo.png；找不到匹配根的孤儿文件
+                    自动降级为平铺。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
                 <label class="label">保存哈希索引记录</label>
                 <el-switch v-model="configStore.settings.saveRecordEnabled" />
               </div>

@@ -117,6 +117,20 @@ function keepLatestAll() {
   (store.versionGroups as ModVersionGroup[]).forEach(keepLatestVersion);
 }
 
+function clearAllSelection() {
+  let count = 0;
+  groups.value.forEach((group) => {
+    group.files.forEach((file) => {
+      if (file.selectedForDelete) {
+        file.selectedForDelete = false;
+        count++;
+      }
+    });
+  });
+  if (count > 0) ElMessage.info(`已取消 ${count} 个勾选`);
+  else ElMessage.info("当前没有已勾选的文件");
+}
+
 async function preview() {
   const normalized = await props.ensureNormalizedPaths();
   if (!normalized) return;
@@ -194,6 +208,9 @@ watch(
           <el-button :disabled="busy" @click="applyKeepModeAll('oldest')">全部保留最旧</el-button>
         </template>
         <el-button v-else :disabled="busy" @click="keepLatestAll">全部保留最新版本</el-button>
+        <el-button :disabled="busy || !selectedFiles.length" @click="clearAllSelection">
+          取消全部勾选
+        </el-button>
       </div>
       <div class="actions push">
         <el-button type="danger" :disabled="busy || !selectedFiles.length" @click="applyDelete">

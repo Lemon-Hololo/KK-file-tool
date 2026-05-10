@@ -22,7 +22,7 @@ use crate::{
 /// - 历史库补列：`thread_count` / `log_max_length` / `io_concurrency_multiplier` /
 ///   `extreme_row_threshold` / `text_preview_max_kb` / `zip_preview_max_entries` /
 ///   `mod_scan_default_keyword` / `suffix_default_target` /
-///   `mod_rollback_enabled` / `mod_backup_dir`（设置项）；
+///   `mod_rollback_enabled` / `mod_backup_dir` / `preserve_dir_on_move`（设置项）；
 ///   `rollback_enabled`（三类记录主表，标记单条记录创建时是否启用回滚）。
 ///   重复列错误忽略。
 pub fn init_schema(db_path: &Path) -> AppResult<()> {
@@ -238,6 +238,11 @@ pub fn init_schema(db_path: &Path) -> AppResult<()> {
     );
     let _ = conn.execute(
         "ALTER TABLE app_settings ADD COLUMN mod_backup_dir TEXT NULL",
+        [],
+    );
+    // 去重移动是否保留相对源根的子目录结构；默认 0 = 平铺，与历史行为一致。
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN preserve_dir_on_move INTEGER NOT NULL DEFAULT 0",
         [],
     );
 

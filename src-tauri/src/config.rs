@@ -53,6 +53,13 @@ pub const DEFAULT_SUFFIX_TARGET: &str = "txt";
 /// 记录主表的 `rollback_enabled = 0`，对应记录在记录管理页的"撤回"按钮置灰。
 pub const DEFAULT_MOD_ROLLBACK_ENABLED: bool = true;
 
+/// 默认是否在去重移动时保留文件相对源根目录的子目录结构。
+///
+/// 关闭（默认）时所有选中文件平铺到 `<target_dir>/<task_id>/`，与历史行为一致。
+/// 开启时按"文件 absPath 去掉所属任务输入根"得到相对子路径，落到
+/// `<target_dir>/<task_id>/<rel_dir>/<file_name>`；找不到匹配根则降级为平铺。
+pub const DEFAULT_PRESERVE_DIR_ON_MOVE: bool = false;
+
 /// Pixiv 标签接口默认 base URL；最终请求 URL 拼接为 `<base><pid>`。
 ///
 /// base 后是否带斜杠都接受——业务侧 [`crate::services::pixiv_tag`] 会自动补齐。
