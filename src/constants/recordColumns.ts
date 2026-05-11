@@ -121,3 +121,39 @@ export const modDetailColumns: VirtualColumn[] = [
   { key: "applyError", label: "执行错误", minWidth: 180, ellipsis: true, resizable: true },
   { key: "rollbackError", label: "撤回错误", minWidth: 180, ellipsis: true, resizable: true }
 ];
+
+/** 图片相似度去重记录的操作类型展示文案。 */
+export function formatImageDedupKind(kind: string): string {
+  if (kind === "similarity_delete") return "按相似度删除";
+  return kind;
+}
+
+/** 图片去重记录列表列。 */
+export const imageDedupListColumns: VirtualColumn[] = [
+  { key: "recordName", label: "记录名", minWidth: 220, ellipsis: true, resizable: true },
+  {
+    key: "kind",
+    label: "类型",
+    width: 130,
+    formatter: (_row, v: string) => formatImageDedupKind(v)
+  },
+  {
+    key: "createdAt",
+    label: "时间",
+    width: 170,
+    formatter: (_row, v: number) => formatTimestamp(v)
+  },
+  { key: "successItems", label: "成功", width: 70 },
+  { key: "totalItems", label: "总数", width: 70 },
+  { key: "rollbackStatus", label: "回滚状态", width: 130 }
+];
+
+/** 图片去重记录详情列。 */
+export const imageDedupDetailColumns: VirtualColumn[] = [
+  { key: "oldPath", label: "原图路径", minWidth: 260, ellipsis: true, resizable: true },
+  { key: "newPath", label: "备份路径", minWidth: 260, ellipsis: true, resizable: true },
+  { key: "applySuccess", label: "删除", width: 70 },
+  { key: "rollbackSuccess", label: "撤回", width: 70 },
+  { key: "applyError", label: "删除错误", minWidth: 180, ellipsis: true, resizable: true },
+  { key: "rollbackError", label: "撤回错误", minWidth: 180, ellipsis: true, resizable: true }
+];

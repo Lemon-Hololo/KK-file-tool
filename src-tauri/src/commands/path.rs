@@ -73,7 +73,10 @@ fn normalize_input_paths_impl(paths: Vec<String>) -> AppResult<NormalizePathResu
     Ok(NormalizePathResult {
         // canonicalize 在 Windows 返回 verbatim 路径（`\\?\D:\...`），前端期待的是
         // 普通路径，需要在出口统一去掉前缀。
-        normalized_paths: final_paths.iter().map(|p| to_user_friendly_path(p)).collect(),
+        normalized_paths: final_paths
+            .iter()
+            .map(|p| to_user_friendly_path(p))
+            .collect(),
         removed_paths: removed,
         warnings,
     })

@@ -4,7 +4,7 @@
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex, atomic::AtomicUsize},
+    sync::{atomic::AtomicUsize, Arc, Mutex},
 };
 
 use tauri::AppHandle;

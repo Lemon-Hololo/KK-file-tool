@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 
 use crate::{
     db::open_connection,
@@ -22,8 +22,9 @@ use crate::{
 /// - 历史库补列：`thread_count` / `log_max_length` / `io_concurrency_multiplier` /
 ///   `extreme_row_threshold` / `text_preview_max_kb` / `zip_preview_max_entries` /
 ///   `mod_scan_default_keyword` / `suffix_default_target` /
-///   `mod_rollback_enabled` / `mod_backup_dir` / `preserve_dir_on_move`（设置项）；
-///   `rollback_enabled`（三类记录主表，标记单条记录创建时是否启用回滚）。
+///   `mod_rollback_enabled` / `mod_backup_dir` / `preserve_dir_on_move` /
+///   `pixiv_*` / `image_dedup_*` 9 列（设置项）；
+///   `rollback_enabled`（四类记录主表，标记单条记录创建时是否启用回滚）。
 ///   重复列错误忽略。
 pub fn init_schema(db_path: &Path) -> AppResult<()> {
     let conn = open_connection(db_path)?;
@@ -169,6 +170,34 @@ pub fn init_schema(db_path: &Path) -> AppResult<()> {
 
     CREATE INDEX IF NOT EXISTS idx_mod_op_items_record_id ON mod_op_items(record_id);
     CREATE INDEX IF NOT EXISTS idx_mod_op_records_kind ON mod_op_records(kind);
+
+    -- 图片相似度去重记录（op_record_repo 的另一个实例）
+    -- kind 当前固定 "similarity_delete"，与 empty_dir_op_kind 同样保留扩展位。
+    CREATE TABLE IF NOT EXISTS image_dedup_op_records (
+      record_id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      record_name TEXT NOT NULL,
+      source_paths TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      rollback_status TEXT NOT NULL DEFAULT 'applied',
+      rollback_enabled INTEGER NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE IF NOT EXISTS image_dedup_op_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      record_id TEXT NOT NULL,
+      old_path TEXT NOT NULL,
+      new_path TEXT NOT NULL,
+      apply_success INTEGER NOT NULL DEFAULT 0,
+      apply_error TEXT NULL,
+      rollback_success INTEGER NULL,
+      rollback_error TEXT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (record_id) REFERENCES image_dedup_op_records(record_id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_image_dedup_items_record_id ON image_dedup_op_items(record_id);
+    CREATE INDEX IF NOT EXISTS idx_image_dedup_records_kind ON image_dedup_op_records(kind);
     "#,
     )
     .map_err(|e| AppError::Db(e.to_string()))?;
@@ -295,6 +324,46 @@ pub fn init_schema(db_path: &Path) -> AppResult<()> {
     // Pixiv 增量结果合并刷新间隔（毫秒）。0 = 即刻应用；>0 = 节流到固定间隔。
     let _ = conn.execute(
         "ALTER TABLE app_settings ADD COLUMN pixiv_partial_flush_interval_ms INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+
+    // 图片相似度去重设置：算法 / 哈希边长 / 阈值 / 扩展名（JSON 数组）/ 大小过滤 /
+    // 边长过滤 / 保留策略 / 回滚开关 / 备份目录。所有 DEFAULT 与 config.rs::DEFAULT_*
+    // 严格对齐，新装与升级用户行为一致。
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN image_dedup_algorithm TEXT NOT NULL DEFAULT 'phash'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN image_dedup_hash_size INTEGER NOT NULL DEFAULT 16",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN image_dedup_similarity_threshold INTEGER NOT NULL DEFAULT 90",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN image_dedup_extensions TEXT NOT NULL DEFAULT '[\"jpg\",\"jpeg\",\"png\",\"webp\",\"bmp\",\"gif\"]'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN image_dedup_min_file_size_kb INTEGER NOT NULL DEFAULT 10",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN image_dedup_min_dimension INTEGER NOT NULL DEFAULT 64",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN image_dedup_keep_policy TEXT NOT NULL DEFAULT 'largestResolution'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN image_dedup_rollback_enabled INTEGER NOT NULL DEFAULT 1",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE app_settings ADD COLUMN image_dedup_backup_dir TEXT NULL",
         [],
     );
 

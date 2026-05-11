@@ -38,6 +38,7 @@ import SuffixPanel from "../components/SuffixPanel.vue";
 import EmptyDirsPanel from "../components/EmptyDirsPanel.vue";
 import ModToolsPanel from "../components/ModToolsPanel.vue";
 import PixivTagPanel from "../components/PixivTagPanel.vue";
+import ImageDedupPanel from "../components/ImageDedupPanel.vue";
 
 const taskStore = useTaskStore();
 const runtimeStore = useRuntimeStore();
@@ -45,7 +46,9 @@ const recordStore = useRecordStore();
 const previewStore = usePreviewStore();
 
 const paths = useStorage<string[]>("taskPaths", []);
-const activeTab = useStorage<"dedup" | "suffix" | "emptyDirs" | "pixiv" | "mod">("taskActiveTab", "dedup");
+const activeTab = useStorage<
+  "dedup" | "suffix" | "emptyDirs" | "pixiv" | "imageDedup" | "mod"
+>("taskActiveTab", "dedup");
 const activeSubTab = useStorage<"rename" | "organize" | "duplicates" | "versions" | "scan">("modToolsTab", "rename");
 const pathInput = ref("");
 
@@ -54,6 +57,7 @@ const mainTabs = [
   { label: "后缀修改", value: "suffix" },
   { label: "空文件夹清理", value: "emptyDirs" },
   { label: "Pixiv 标签", value: "pixiv" },
+  { label: "图片相似度", value: "imageDedup" },
   { label: "Mod 工具", value: "mod" }
 ];
 
@@ -77,8 +81,21 @@ const activeTabValue = computed({
       (v === "rename" || v === "organize" || v === "duplicates" || v === "versions" || v === "scan")
     ) {
       activeSubTab.value = v as "rename" | "organize" | "duplicates" | "versions" | "scan";
-    } else if (v === "dedup" || v === "suffix" || v === "emptyDirs" || v === "pixiv" || v === "mod") {
-      activeTab.value = v as "dedup" | "suffix" | "emptyDirs" | "pixiv" | "mod";
+    } else if (
+      v === "dedup" ||
+      v === "suffix" ||
+      v === "emptyDirs" ||
+      v === "pixiv" ||
+      v === "imageDedup" ||
+      v === "mod"
+    ) {
+      activeTab.value = v as
+        | "dedup"
+        | "suffix"
+        | "emptyDirs"
+        | "pixiv"
+        | "imageDedup"
+        | "mod";
     }
   }
 });
@@ -224,6 +241,11 @@ onMounted(async () => {
         />
         <PixivTagPanel
           v-show="activeTab === 'pixiv'"
+          :paths="paths"
+          :ensure-normalized-paths="ensureNormalizedPaths"
+        />
+        <ImageDedupPanel
+          v-show="activeTab === 'imageDedup'"
           :paths="paths"
           :ensure-normalized-paths="ensureNormalizedPaths"
         />

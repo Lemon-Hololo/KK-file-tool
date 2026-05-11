@@ -5,8 +5,12 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    DEFAULT_EXTREME_ROW_THRESHOLD, DEFAULT_IO_CONCURRENCY_MULTIPLIER, DEFAULT_KEEP_POLICY,
-    DEFAULT_LOG_MAX_LENGTH, DEFAULT_MOD_ROLLBACK_ENABLED, DEFAULT_MOD_SCAN_KEYWORD,
+    DEFAULT_EXTREME_ROW_THRESHOLD, DEFAULT_IMAGE_DEDUP_ALGORITHM, DEFAULT_IMAGE_DEDUP_EXTENSIONS,
+    DEFAULT_IMAGE_DEDUP_HASH_SIZE, DEFAULT_IMAGE_DEDUP_KEEP_POLICY,
+    DEFAULT_IMAGE_DEDUP_MIN_DIMENSION, DEFAULT_IMAGE_DEDUP_MIN_FILE_SIZE_KB,
+    DEFAULT_IMAGE_DEDUP_ROLLBACK_ENABLED, DEFAULT_IMAGE_DEDUP_SIMILARITY_THRESHOLD,
+    DEFAULT_IO_CONCURRENCY_MULTIPLIER, DEFAULT_KEEP_POLICY, DEFAULT_LOG_MAX_LENGTH,
+    DEFAULT_MOD_ROLLBACK_ENABLED, DEFAULT_MOD_SCAN_KEYWORD,
     DEFAULT_PIXIV_PARTIAL_FLUSH_INTERVAL_MS, DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE,
     DEFAULT_PIXIV_TAG_API_BASE, DEFAULT_PRESERVE_DIR_ON_MOVE, DEFAULT_SUFFIX_TARGET,
     DEFAULT_TEXT_PREVIEW_MAX_KB, DEFAULT_THEME_MODE, DEFAULT_THREAD_COUNT,
@@ -106,6 +110,26 @@ pub struct AppSettings {
     /// `>0` = 节流：partial 进入缓冲区，按本间隔批量 commit。done 终态会立刻 flush
     /// 一次，不被节流拖延。UI 限制最大 10000ms。
     pub pixiv_partial_flush_interval_ms: i32,
+
+    // ---- 图片相似度去重 ----
+    /// 感知哈希算法：`phash` / `dhash` / `ahash`。
+    pub image_dedup_algorithm: String,
+    /// 哈希边长（最终 bit 数 = size×size）；常用 8 / 16 / 32。
+    pub image_dedup_hash_size: i32,
+    /// 相似度阈值（百分比，0–100）。值越高越严格；100 等同字节级相同。
+    pub image_dedup_similarity_threshold: i32,
+    /// 参与扫描的图像扩展名（小写、不带点）。落库为 JSON 数组字符串。
+    pub image_dedup_extensions: Vec<String>,
+    /// 跳过低于此值的小文件（KiB）。0 视为不限。
+    pub image_dedup_min_file_size_kb: i32,
+    /// 跳过宽或高小于此值的小图（像素）。0 视为不限。
+    pub image_dedup_min_dimension: i32,
+    /// 默认保留策略：`largestResolution` / `largestFile` / `newest` / `oldest`。
+    pub image_dedup_keep_policy: String,
+    /// 是否启用回滚备份（与 Mod 工具语义一致）。
+    pub image_dedup_rollback_enabled: bool,
+    /// 备份目录；为空时使用 `<exe_dir>/image-dedup-backups`。
+    pub image_dedup_backup_dir: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -136,6 +160,18 @@ impl Default for AppSettings {
             pixiv_use_translation: false,
             pixiv_rate_limit_per_minute: DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE,
             pixiv_partial_flush_interval_ms: DEFAULT_PIXIV_PARTIAL_FLUSH_INTERVAL_MS,
+            image_dedup_algorithm: DEFAULT_IMAGE_DEDUP_ALGORITHM.to_string(),
+            image_dedup_hash_size: DEFAULT_IMAGE_DEDUP_HASH_SIZE,
+            image_dedup_similarity_threshold: DEFAULT_IMAGE_DEDUP_SIMILARITY_THRESHOLD,
+            image_dedup_extensions: DEFAULT_IMAGE_DEDUP_EXTENSIONS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            image_dedup_min_file_size_kb: DEFAULT_IMAGE_DEDUP_MIN_FILE_SIZE_KB,
+            image_dedup_min_dimension: DEFAULT_IMAGE_DEDUP_MIN_DIMENSION,
+            image_dedup_keep_policy: DEFAULT_IMAGE_DEDUP_KEEP_POLICY.to_string(),
+            image_dedup_rollback_enabled: DEFAULT_IMAGE_DEDUP_ROLLBACK_ENABLED,
+            image_dedup_backup_dir: None,
         }
     }
 }

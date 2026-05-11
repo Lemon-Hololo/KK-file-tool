@@ -5,7 +5,7 @@
 
 use std::{collections::HashSet, path::Path};
 
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 
 use crate::{
     db::open_connection,

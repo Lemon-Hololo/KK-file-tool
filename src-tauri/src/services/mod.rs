@@ -9,6 +9,7 @@
 pub mod dedup;
 pub mod empty_dirs;
 pub mod events;
+pub mod image_dedup;
 pub mod logging;
 pub mod mod_tools;
 pub mod move_file;

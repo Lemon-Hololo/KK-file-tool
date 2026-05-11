@@ -80,3 +80,42 @@ pub const DEFAULT_PIXIV_RATE_LIMIT_PER_MINUTE: i32 = 60;
 /// 内容再看下一波刷新）。**间隔到了的当下立即 flush 一次，确保 done 终态不被
 /// 拖延**。UI 限制最大 10000ms 兜底。
 pub const DEFAULT_PIXIV_PARTIAL_FLUSH_INTERVAL_MS: i32 = 0;
+
+// ---- 图片相似度去重 ----
+
+/// 默认感知哈希算法：pHash（基于 DCT，抗压缩 / 缩放最稳）。
+pub const DEFAULT_IMAGE_DEDUP_ALGORITHM: &str = "phash";
+
+/// 默认哈希位数（边长，最终 bit 数 = size * size）。
+///
+/// 16 → 256 bit 哈希，分辨力足以区分场景级差异；调到 32 → 1024 bit 内存翻 4 倍
+/// 但收益不大；8 → 64 bit 误报偏多。
+pub const DEFAULT_IMAGE_DEDUP_HASH_SIZE: i32 = 16;
+
+/// 默认相似度阈值（百分比）。`90` ≈ Hamming 距离不超过总位数的 10%。
+///
+/// 90% 大致能合并"同图不同压缩 / 不同分辨率"，又不会把同场景不同构图误合并。
+/// 用户希望更严就调到 95+，希望更宽松就降到 80。
+pub const DEFAULT_IMAGE_DEDUP_SIMILARITY_THRESHOLD: i32 = 90;
+
+/// 默认参与扫描的图像扩展名（小写，不带点）。落库为 JSON 数组字符串。
+pub const DEFAULT_IMAGE_DEDUP_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gif"];
+
+/// 默认最小文件大小（KiB）。低于此值跳过——多半是缩略图 / 网页 favicon。
+pub const DEFAULT_IMAGE_DEDUP_MIN_FILE_SIZE_KB: i32 = 10;
+
+/// 默认最小图像边长（像素，宽和高都需 ≥ 此值）。低于此值跳过——多半是图标。
+pub const DEFAULT_IMAGE_DEDUP_MIN_DIMENSION: i32 = 64;
+
+/// 默认保留策略：保留分辨率最大的图（更可能是原图）。
+pub const DEFAULT_IMAGE_DEDUP_KEEP_POLICY: &str = "largestResolution";
+
+/// 默认是否启用回滚备份。关闭后删除 in-place 不留备份，记录主表
+/// `rollback_enabled = 0`，撤回按钮置灰；与 Mod 工具的相同语义。
+pub const DEFAULT_IMAGE_DEDUP_ROLLBACK_ENABLED: bool = true;
+
+/// 默认备份目录子目录名（落到 `<exe_dir>/<DEFAULT_*>` 下）。
+///
+/// 暴露为常量是为了和 Mod 备份目录的 `mod-backups` 命名风格保持一致；用户在配
+/// 置中心填了自定义路径就走自定义。
+pub const DEFAULT_IMAGE_DEDUP_BACKUP_SUBDIR: &str = "image-dedup-backups";

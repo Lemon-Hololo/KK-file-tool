@@ -6,6 +6,7 @@
 
 pub mod empty_dirs;
 pub mod hash_record;
+pub mod image_dedup;
 pub mod mod_tools;
 pub mod move_file;
 pub mod path_norm;
@@ -16,6 +17,7 @@ pub mod task;
 
 pub use empty_dirs::*;
 pub use hash_record::*;
+pub use image_dedup::*;
 pub use mod_tools::*;
 pub use move_file::*;
 pub use path_norm::*;

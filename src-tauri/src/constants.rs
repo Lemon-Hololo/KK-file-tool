@@ -15,6 +15,8 @@ pub mod events {
     pub const MOD_VERSION_PARTIAL: &str = "mod_version_partial";
     /// Pixiv 标签拉取增量结果（每批若干 PID 的 tags 或 error）。
     pub const PIXIV_TAG_PARTIAL: &str = "pixiv_tag_partial";
+    /// 图片相似度去重的扫描增量结果（每个 chunk 完成时一次）。
+    pub const IMAGE_DEDUP_PARTIAL: &str = "image_dedup_partial";
 }
 
 pub mod stages {
@@ -25,6 +27,8 @@ pub mod stages {
     pub const MOD_VERSION: &str = "mod_version";
     /// Pixiv 标签拉取阶段（用于进度事件 stage 字段）。
     pub const PIXIV_TAG: &str = "pixiv_tag";
+    /// 图片相似度去重的扫描+哈希阶段（合并显示，分组阶段是同步的快速操作不单独发进度）。
+    pub const IMAGE_DEDUP_HASH: &str = "image_dedup_hash";
 }
 
 pub mod log_level {
@@ -78,5 +82,48 @@ pub mod empty_dir_op_kind {
 
     pub fn is_valid(v: &str) -> bool {
         matches!(v, DELETE)
+    }
+}
+
+/// 图片相似度去重的操作类型。当前只有"按相似度删除"一种，保留 `kind` 列只是与
+/// `empty_dir_op_kind` 对齐的前向兼容兜底——未来若加"按相似度合并到目录"再扩
+/// 一个值即可，旧记录默认值不动。
+pub mod image_dedup_op_kind {
+    pub const SIMILARITY_DELETE: &str = "similarity_delete";
+
+    pub fn is_valid(v: &str) -> bool {
+        matches!(v, SIMILARITY_DELETE)
+    }
+}
+
+/// 图片相似度去重支持的感知哈希算法。
+///
+/// `phash` 抗压缩 / 旋转最稳；`dhash` 对裁剪敏感；`ahash` 最快但精度最低。
+/// 字符串值与前端 `pixivUseTranslation`-style 设置同步，落库为 `app_settings`
+/// 中的 `image_dedup_algorithm` 字段。
+pub mod image_hash_algorithm {
+    pub const PHASH: &str = "phash";
+    pub const DHASH: &str = "dhash";
+    pub const AHASH: &str = "ahash";
+
+    pub fn is_valid(v: &str) -> bool {
+        matches!(v, PHASH | DHASH | AHASH)
+    }
+}
+
+/// 图片相似度去重的"每组保留哪一张"策略。
+///
+/// 与去重 / Mod 的 `keep_policy`（newest/oldest 二选一）不同：图片场景下
+/// 同一组里可能既有高分辨率也有压缩版，单看时间戳不足以判断哪张是"原图"。
+pub mod image_keep_policy {
+    /// 保留分辨率最大的那张（默认推荐：通常是未压缩 / 未缩放的原图）。
+    pub const LARGEST_RESOLUTION: &str = "largestResolution";
+    /// 保留文件体积最大的那张（编码相同时一般也意味着信息更全）。
+    pub const LARGEST_FILE: &str = "largestFile";
+    pub const NEWEST: &str = "newest";
+    pub const OLDEST: &str = "oldest";
+
+    pub fn is_valid(v: &str) -> bool {
+        matches!(v, LARGEST_RESOLUTION | LARGEST_FILE | NEWEST | OLDEST)
     }
 }

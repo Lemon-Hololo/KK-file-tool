@@ -124,10 +124,7 @@ fn parse_manifest_text(xml: &str) -> Result<ManifestMeta, String> {
                     // quick-xml 0.37+ 移除了 `BytesText::unescape`；改用 `decode()` 做编码层
                     // 转字符串。manifest.xml 的 guid/version/author/game 文本里基本不会出现
                     // XML 实体（&amp; 等），跳过实体反转义不会影响业务。
-                    let text = e
-                        .decode()
-                        .map(|s| s.trim().to_string())
-                        .unwrap_or_default();
+                    let text = e.decode().map(|s| s.trim().to_string()).unwrap_or_default();
                     match tag {
                         "guid" if meta.guid.is_empty() => meta.guid = text,
                         "version" if meta.version.is_empty() => meta.version = text,

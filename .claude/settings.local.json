@@ -9,7 +9,10 @@
       "Bash(xargs wc *)",
       "Bash(grep -v \"^$\")",
       "Bash(echo \"EXIT: $?\")",
-      "Bash(echo \"Exit: $?\")"
+      "Bash(echo \"Exit: $?\")",
+      "WebSearch",
+      "WebFetch(domain:docs.rs)",
+      "Bash(echo \"EXIT_CODE=$?\")"
     ]
   }
 }

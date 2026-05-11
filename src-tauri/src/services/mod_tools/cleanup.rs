@@ -97,7 +97,10 @@ impl GroupSpec for DuplicateSpec {
         (file.guid.clone(), file.author.clone(), file.version.clone())
     }
 
-    fn finalize((guid, author, version): Self::Key, mut files: Vec<ModIdentityFile>) -> Option<Self::Group> {
+    fn finalize(
+        (guid, author, version): Self::Key,
+        mut files: Vec<ModIdentityFile>,
+    ) -> Option<Self::Group> {
         if files.len() <= 1 {
             return None;
         }
@@ -299,8 +302,15 @@ pub async fn run_version_scan(
     paths: Vec<String>,
     runtime: Arc<TaskRuntime>,
 ) -> Result<(), String> {
-    run_grouped_scan::<VersionSpec>(app, app_state, task_id, paths, runtime, "开始检查不同版本 MOD")
-        .await
+    run_grouped_scan::<VersionSpec>(
+        app,
+        app_state,
+        task_id,
+        paths,
+        runtime,
+        "开始检查不同版本 MOD",
+    )
+    .await
 }
 
 /// 通用分组扫描长任务实现：扫候选 → 分块解析 manifest → 增量推送 partial → 终态收尾。

@@ -34,7 +34,8 @@
   这三类备份型操作受用户设置 `mod_rollback_enabled` 控制：默认开启，关闭后直接 `remove_file` / in-place 改写不留备份，记录主表 `rollback_enabled = 0`，UI 上"撤回"按钮置灰、后端命令也会拒绝。备份目录由 `mod_backup_dir` 配置，未配置时落到 `<exe_dir>/mod-backups`；与源文件跨卷时 `op_pipeline::rename_or_copy_delete` 自动退化为 copy + delete 兜底。重命名 / 归类不进入备份概念，永远可撤回。
 - **文件预览**：文本 / 图片 / 压缩包内容查看；压缩包预览列出条目路径、大小、目录标记、修改时间。
 - **Pixiv 标签整理**：按文件名里的 8~9 位 PID 调用 `https://www.pixiv.net/ajax/illust/<pid>` 拿 tag，用虚拟表把每个 tag 渲染成 chip 气泡；点击 chip 把图移到 `<输出目录>/<tag>/`，行保留以便往别的 tag 文件夹继续移。设置中可配置接口 base、排除 tag、Pixiv Cookie、本地 tag 翻译表；排除 tag 与本地翻译表都支持从 JSON / 文本文件导入，导出为 JSON。`pixivUseTranslation` 开关在配置中心和任务面板顶部都暴露，开启后本地翻译表 `pixivLocalTagTranslations[原tag]` 优先作为 chip 显示文本与目录名；没有本地译名时再用 Pixiv 响应里的 `translation.en`；两者都缺失则回落原 tag。每行右侧"译名"列还有三态 segmented 控件（`global` / `original` / `translated`）做单行覆盖。**chip 列展示走 render-time 函数 `displayTagsForRow(row)`**：每次模板渲染时同步访问 `pixivUseTranslation` / `pixivExcludedTags` / `pixivLocalTagTranslations` / `row.tags` / `row.translations` / `row.useTranslationOverride`，依赖直接落在组件 render effect 上；排除判断始终先匹配原 tag，同时兼容匹配当前展示字符串，所以原 tag 被排除时切到译名也不会露出；同时把 `pixivUseTranslation + pixivExcludedTags + pixivLocalTagTranslations` 折成 `tagSlotRefreshKey` 传给 VirtualTable 的 `slotRefreshKey`，让全局开关 / 排除项 / 本地翻译变化时可见行 slot cell 强制重建，避免虚拟滚动复用旧 chip 子树。VirtualTable 的 v-for 只对**可见行**执行，per-row 计算只在屏内十几行上跑，比 panel 级 watchEffect 全表重算更省。**同 PID 多张图**（`_p0..._pN`）：store 用 `_pidIndex: Map<string, number[]>` 把每个 PID 映射到所有索引，partial 一到达 `_commitPending` 就把结果应用到整组同 PID 行；行级操作（移动 / 单行重试 / 译名覆盖）按 `absPath` 定位（`_pathIndex: Map<string, number>`，moveByTag 完成后旧 absPath 删除、新 absPath 写入同 idx）。`pixivPartialFlushIntervalMs` 控制前端的 partial 合并刷新节奏：0 = 实时（默认）；>0 = `setTimeout` 节流到固定间隔（done 终态会立刻 flush 一次不被拖延）。`pixivRateLimitPerMinute` 限制每分钟最大请求数（默认 60 = 1 req/s），所有并发 worker 与重试共享一条 next-slot 节流队列，防止瞬时打穿被 Pixiv 拉黑。后端 worker **每条 PID 完成都会发一行 task_log**（成功 INFO + tag 数 + 译名数；失败 WARN + PID + 错误首行），日志面板能看到具体哪个 ID 出错；面板顶部"重试失败 (N)"按钮一键调 `store.retryFailed`，按 PID 去重后串行重试所有 error 行（每条 fetchPixivTagSingle 也走共享限速队列，不会瞬时打穿）。**取值约定**（对照 Pixiv 响应 `body.tags.tags[*]`）：每个 item 的 `tag` 字段就是原 tag 字符串，可选的 `translation.en` 是社区英译；后端 `parse_pixiv_tag_payload` 把所有"有 translation.en"的 tag 汇总成 `original → en` Map 一并发回前端，前端按"开关 + 行级覆盖 + 本地翻译优先"决定 chip 显示原 tag 还是译名。可选缩略图列开关；开启后图片列默认排到最前面，"文件"列上的 hover 浮窗自动去掉。表头支持列自定义（显示 / 顺序 / 左固定，持久化键 `pixiv:tags`），row-key 用 `absPath`（同 PID 多行时 PID 不再唯一，用作 row-key 会让虚拟表把多行视作"同一行"互相覆盖）。HTTP 走后端 `reqwest`（rustls + webpki bundled 根证书）规避 CORS 与系统证书库依赖。无可撤回记录（一次扫描会产生多次点击的工作流，不适合每次点击都写一条记录）。store 端 partial / retry / moveByTag **必须用对象替换写 `this.rows[idx] = {...}`**，不要 in-place 改嵌套字段 —— 嵌套 reactive proxy 在多次写入下偶发不触发依赖（与 `moveByTag` 同一坑）。
-- **记录管理**：哈希记录、后缀记录、空文件夹清理记录、Mod 操作记录统一在"记录管理"页；Mod 记录按 `kind` 分 `rename` / `organize` / `modify` / `duplicate_delete` / `version_delete`。
+- **图片相似度去重**：长任务扫描 → WalkDir 收候选 → rayon 并行计算感知哈希（`image_hasher` v3）→ 滚动分组（每张图与现有组的 head 比 Hamming 距离，命中阈值即并入，否则起新组）→ 增量 `image_dedup_partial` 推送（每 chunk = 64 张一次）。三种算法 `phash` / `dhash` / `ahash` 内部映射到 `DoubleGradient` / `Gradient` / `Mean`（`image_hasher` 没有 DCT pHash，DoubleGradient 是最稳的近似）。组内按用户选的 `image_dedup_keep_policy` 排序：`largestResolution`（默认）/ `largestFile` / `newest` / `oldest`，`files[0]` 即默认 keep。删除走与 Mod 工具完全同型的"备份到 `<backup_root>/<record_id>/<原文件名>` 后真删"流程（`op_pipeline::rename_or_copy_delete` 跨卷退化为 copy + delete）；备份目录由 `image_dedup_backup_dir` 配置，未配置时落到 `<exe_dir>/image-dedup-backups`。`image_dedup_rollback_enabled` 关闭时直接 `remove_file` 真删、记录 `rollback_enabled = 0`、撤回按钮置灰，与 Mod 工具同语义。任务面板顶部的"按相似度区间过滤"滑块只是 UI 端筛选（不重扫），用户在 50%~100% 之间随便切；阈值本身（决定哪些图算"同一组"）由配置中心 `image_dedup_similarity_threshold` 控制。候选过滤项 `image_dedup_extensions` / `image_dedup_min_file_size_kb` / `image_dedup_min_dimension` 都暴露给用户改，留默认即可（jpg/jpeg/png/webp/bmp/gif、≥10 KiB、≥64 px 都参与）。**与 Mod 备份的关键差异**：图片去重不参与 `preserve_dir_on_move`——图片场景下用户更在意"按记录批量清理"而不是复刻原目录树，备份目录恒为 `<root>/<record_id>/<filename>`；同名撞名仍由 `resolve_conflict_with_reserved` 自动 ` (N)` 避让。**并发模型**：rayon 池线程数 = `resolve_thread_count × resolve_io_concurrency_multiplier`，与 dedup 对齐——`image::open` 包含读盘 + 解码，IO 占比可观，超额订阅 worker 让磁盘 IO 等待期间总有任务在跑（默认倍率 2，SSD/NVMe 可上调）。**进度与日志按"张"为单位推进**：`process_chunk` 内每张图哈希完成时通过共享 `AtomicUsize` `fetch_add` 累加 done 并 emit 一次 `image_dedup_hash` 进度事件，同时打一行 `info_path("哈希计算完成", path)` 日志（解析失败 / 尺寸过滤的带"跳过"标签）——日志与进度同时机发出，便于在日志面板按完成顺序对照；进度条按候选 `total`（含解析失败 / 尺寸过滤的）平滑增长，而不是按 chunk（chunk 是 `concurrency × 16`，clamp 到 256–2048，小图库一两个 chunk 就跑完会让进度条瞬时跳完）。日志频率较高但与 dedup 同惯例——前端 runtime store 已经做了 150ms 节流缓冲。
+- **记录管理**：哈希记录、后缀记录、空文件夹清理记录、Mod 操作记录、图片去重记录统一在"记录管理"页；Mod 记录按 `kind` 分 `rename` / `organize` / `modify` / `duplicate_delete` / `version_delete`，图片去重记录 `kind` 当前固定 `similarity_delete`（保留扩展位）。
 
 ---
 
@@ -75,6 +76,7 @@
 | thiserror | 2.0 | `AppError` 派生 |
 | reqwest | 0.13 | Pixiv tag HTTP 客户端（特性 `rustls + gzip + json + socks`，0.13 已默认 rustls + aws-lc-rs，避开 OpenSSL 系统依赖；`socks` 让用户能用 SOCKS5 代理；旧名 `rustls-tls` 在 0.12 才有） |
 | regex | 1 | Pixiv 文件名 PID 提取（`\d{8,9}`） |
+| image_hasher | 3 | 图片相似度去重的感知哈希（pHash → DoubleGradient / dHash → Gradient / aHash → Mean）；qarmin 维护的 img_hash 活跃 fork，跟随 `image` 0.25 升级 |
 
 ---
 
@@ -86,9 +88,9 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 │   ├── App.vue / main.ts
 │   ├── router/{index,routes}.ts
 │   ├── views/
-│   │   ├── TaskPage.vue                 # 任务中心：路径+日志 / 去重 / 后缀 / 空文件夹 / Pixiv 标签 / Mod 工具
+│   │   ├── TaskPage.vue                 # 任务中心：路径+日志 / 去重 / 后缀 / 空文件夹 / Pixiv 标签 / 图片相似度 / Mod 工具
 │   │   ├── SettingsPage.vue             # 配置中心（左侧导航 + 右侧滚动 + IntersectionObserver 高亮）
-│   │   └── RecordManagePage.vue         # 四类记录管理（Mod 记录按 kind 过滤）
+│   │   └── RecordManagePage.vue         # 五类记录管理（哈希 / 后缀 / 空文件夹 / Mod / 图片去重，Mod 记录按 kind 过滤）
 │   ├── components/
 │   │   ├── DedupPanel.vue               # 去重面板（独立，不走 OpsPanel）
 │   │   ├── SuffixPanel.vue              # 薄包装 → OpsPanel
@@ -101,6 +103,7 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 │   │   ├── ModScanPanel.vue             # 扫描 + 勾选 + modify
 │   │   ├── ModToolsPanel.vue            # 五个 Mod 子 Tab 容器（TabBar + v-show）
 │   │   ├── PixivTagPanel.vue            # Pixiv 标签整理（动态 tag 列 + 单元格点击移动）
+│   │   ├── ImageDedupPanel.vue          # 图片相似度去重（collapse 分组 + 缩略图 + 4 种 keep 策略）
 │   │   ├── RealtimeLogPanel.vue         # 手写虚拟滚动日志
 │   │   ├── DuplicateGroupTable.vue
 │   │   ├── PreviewPanel.vue / PathPreviewLink.vue / MoveConfirmDialog.vue / MoveReportDialog.vue
@@ -113,16 +116,16 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 │   │       └── OpsPanel.vue             # 通用"预览→应用→撤回"面板
 │   ├── stores/                          # Pinia Options-style
 │   │   └── runtime.ts / task.ts / record.ts / config.ts / preview.ts /
-│   │       suffix.ts / emptyDirs.ts / modTools.ts / pixivTag.ts /
+│   │       suffix.ts / emptyDirs.ts / modTools.ts / pixivTag.ts / imageDedup.ts /
 │   │       _opRecordCrud.ts             # 通用可撤回记录 CRUD action 工厂
 │   ├── services/                        # IPC 封装
 │   │   └── tauri.ts / task.ts / settings.ts / record.ts / preview.ts /
-│   │       suffix.ts / emptyDirs.ts / modTools.ts / pixivTag.ts
+│   │       suffix.ts / emptyDirs.ts / modTools.ts / pixivTag.ts / imageDedup.ts
 │   ├── types/
 │   │   ├── common.ts / task.ts / settings.ts / record.ts / moveReport.ts /
 │   │   │   preview.ts / virtualTable.ts
 │   │   ├── opRecord.ts                  # 通用可撤回操作记录类型
-│   │   └── suffix.ts / emptyDirs.ts / modTools.ts / pixivTag.ts
+│   │   └── suffix.ts / emptyDirs.ts / modTools.ts / pixivTag.ts / imageDedup.ts
 │   ├── composables/
 │   │   ├── useTheme.ts                  # 主题切换
 │   │   ├── usePathNormalize.ts          # 路径规范化 + 警告弹窗
@@ -146,27 +149,34 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 │   ├── external_config.rs               # 启动前可读的 JSON 配置（数据库路径）
 │   ├── models/                          # 按领域拆分的 DTO，全部 camelCase serde
 │   │   └── mod.rs / task.rs / hash_record.rs / move_file.rs / path_norm.rs /
-│   │       settings.rs / suffix.rs / empty_dirs.rs / mod_tools.rs / pixiv_tag.rs
+│   │       settings.rs / suffix.rs / empty_dirs.rs / mod_tools.rs / pixiv_tag.rs /
+│   │       image_dedup.rs
 │   ├── db/                              # 数据访问层
 │   │   ├── mod.rs / schema.rs
-│   │   ├── op_record_repo.rs            # 通用"操作记录"仓储（suffix / mod_op / empty_dir 共用）
+│   │   ├── op_record_repo.rs            # 通用"操作记录"仓储（suffix / mod_op / empty_dir / image_dedup_op 共用）
 │   │   └── hash_repo.rs / move_repo.rs / settings_repo.rs
 │   ├── services/                        # 业务逻辑
 │   │   ├── mod.rs / events.rs / logging.rs
 │   │   ├── op_pipeline.rs               # 通用 preview→apply→rollback 流水线
 │   │   ├── suffix.rs / empty_dirs.rs / dedup.rs / move_file.rs / preview.rs
 │   │   ├── pixiv_tag.rs                 # Pixiv tag 拉取长任务 + 单条移动（reqwest + tokio Semaphore）
-│   │   └── mod_tools/
-│   │       ├── mod.rs                   # 记录查询/删除/重命名/撤回（映射到 op_pipeline）
-│   │       ├── backup.rs                # Mod 备份目录解析与备份对构造（cleanup / modify 共享 prepare_mod_backup 入口）
-│   │       ├── rename.rs / organize.rs  # 纯 rename → op_pipeline::persist_apply_rename_pairs
-│   │       ├── cleanup.rs               # 重复/不同版本检查；分块并行解析 manifest，两类扫描共用 GroupSpec trait + run_grouped_scan/preview_grouped；删除走 backup::prepare_mod_backup
-│   │       ├── modify.rs                # 非纯 rename → op_pipeline::persist_apply_with_executor，备份对走 backup::prepare_mod_backup
-│   │       └── scan.rs / zipmod.rs
+│   │   ├── mod_tools/
+│   │   │   ├── mod.rs                   # 记录查询/删除/重命名/撤回（映射到 op_pipeline）
+│   │   │   ├── backup.rs                # Mod 备份目录解析与备份对构造（cleanup / modify 共享 prepare_mod_backup 入口）
+│   │   │   ├── rename.rs / organize.rs  # 纯 rename → op_pipeline::persist_apply_rename_pairs
+│   │   │   ├── cleanup.rs               # 重复/不同版本检查；分块并行解析 manifest，两类扫描共用 GroupSpec trait + run_grouped_scan/preview_grouped；删除走 backup::prepare_mod_backup
+│   │   │   ├── modify.rs                # 非纯 rename → op_pipeline::persist_apply_with_executor，备份对走 backup::prepare_mod_backup
+│   │   │   └── scan.rs / zipmod.rs
+│   │   └── image_dedup/
+│   │       ├── mod.rs                   # 记录查询/删除/重命名/撤回（映射到 op_pipeline）+ IMAGE_DEDUP_TABLES 描述符
+│   │       ├── hash.rs                  # 候选过滤 + 单图哈希计算（image_hasher）；phash → DoubleGradient 等映射
+│   │       ├── scan.rs                  # 长任务：WalkDir → chunk 并行哈希 → 滚动分组 → 增量推送 image_dedup_partial
+│   │       ├── backup.rs                # 图片去重备份目录解析；不参与 preserve_dir_on_move（恒为 <root>/<record_id>/<filename>）
+│   │       └── apply.rs                 # 删除选中 + 写记录（与 mod_tools::cleanup::apply_mod_delete 同型）
 │   ├── commands/                        # #[tauri::command]，纯转发
 │   │   └── mod.rs / path.rs / dedup.rs / runtime.rs / move_file.rs /
 │   │       preview.rs / settings.rs / records.rs /
-│   │       suffix.rs / empty_dirs.rs / mod_tools.rs / pixiv_tag.rs
+│   │       suffix.rs / empty_dirs.rs / mod_tools.rs / pixiv_tag.rs / image_dedup.rs
 │   └── utils/
 │       └── mod.rs / path.rs / hash.rs / filename.rs / time.rs
 │           # path:     to_extended_length_path / to_user_friendly_path / cmp_key_case_insensitive /
@@ -240,7 +250,7 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 
 **`types/opRecord.ts`** 提供 `OpApplyItem` / `OpApplyResponse` / `OpRecordSummary<Extra>` / `OpRecordItem` / `OpRecordDetail<Extra>` / `OpRollbackCheck` / `OpRollbackResponse`。基础类型都包含 `rollbackEnabled: boolean`，业务可继续用泛型扩展（如 `SuffixRecordSummary = OpRecordSummary<{ targetSuffix }>`、`ModOpRecordSummary = OpRecordSummary<{ kind: ... }>`）。
 
-**`stores/_opRecordCrud.ts`** 提供 `createOpRecordCrudActions` / `createOpRecordCrudActionsWithRename` 两个 action 工厂，统一生成记录型 store 的 `refreshRecords / loadDetail / checkRollback / rollback / remove / removeBatch`，以及可选 `rename`。`suffix.ts` / `emptyDirs.ts` / `modTools.ts` 都通过 spread 工厂拿这些 CRUD action，只保留 preview/apply/scan 等业务专属逻辑。新增记录型业务时不要再手抄这些 action；如果该记录支持重命名，用 `createOpRecordCrudActionsWithRename`，否则用 `createOpRecordCrudActions`。
+**`stores/_opRecordCrud.ts`** 提供 `createOpRecordCrudActions` / `createOpRecordCrudActionsWithRename` 两个 action 工厂，统一生成记录型 store 的 `refreshRecords / loadDetail / checkRollback / rollback / remove / removeBatch`，以及可选 `rename`。`suffix.ts` / `emptyDirs.ts` / `modTools.ts` / `imageDedup.ts` 都通过 spread 工厂拿这些 CRUD action，只保留 preview/apply/scan 等业务专属逻辑。新增记录型业务时不要再手抄这些 action；如果该记录支持重命名，用 `createOpRecordCrudActionsWithRename`，否则用 `createOpRecordCrudActions`。
 
 **`components/common/OpsPanel.vue`** 泛型面板，props：
 - `paths` / `ensureNormalizedPaths`：路径规范化
@@ -252,7 +262,7 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 
 `SuffixPanel` / `ModRenamePanel` / `ModOrganizePanel` / `EmptyDirsPanel` 都是 **< 100 行** 的薄包装，只定义列 + rows computed + 四个回调。
 
-**`components/RecordTab.vue`** 是记录管理页的通用 tab：负责搜索、批量删除、VirtualTable 列表、详情抽屉、撤回按钮与缺失路径确认；业务差异通过 `listColumns / detailColumns / searchableFields / extraFilter / #extraDescription / #rowActions` 注入。`RecordManagePage.vue` 中后缀 / 空文件夹 / Mod 三类记录都必须走 RecordTab；哈希记录因有"应用记录"与独立详情结构仍保留独立模板。
+**`components/RecordTab.vue`** 是记录管理页的通用 tab：负责搜索、批量删除、VirtualTable 列表、详情抽屉、撤回按钮与缺失路径确认；业务差异通过 `listColumns / detailColumns / searchableFields / extraFilter / #extraDescription / #rowActions` 注入。`RecordManagePage.vue` 中后缀 / 空文件夹 / Mod / 图片去重四类记录都必须走 RecordTab；哈希记录因有"应用记录"与独立详情结构仍保留独立模板。
 
 **`components/ModGroupPanel.vue`** 是重复 MOD / 不同版本 MOD 的共用分组检查面板。`ModDuplicatePanel.vue` 与 `ModVersionPanel.vue` 只做 `kind="duplicate" | "version"` 的薄包装；保留按钮、collapse 分组、删除选中、撤回本次等交互都在 ModGroupPanel 中维护。新增类似"按某个 manifest 维度分组 → 删除选中 → 写 Mod 记录"的面板时优先扩展 ModGroupPanel，不要复制两份分组表模板。
 
@@ -287,6 +297,7 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 | `mod_duplicate_partial` | `ModDuplicatePartialPayload` | 重复 MOD 增量结果 |
 | `mod_version_partial` | `ModVersionPartialPayload` | 不同版本 MOD 增量结果 |
 | `pixiv_tag_partial` | `PixivTagPartialPayload` | Pixiv tag 拉取增量结果（每批若干 PID 的 tags / error）|
+| `image_dedup_partial` | `ImageDedupPartialPayload` | 图片相似度去重扫描增量结果（每 chunk 一次）|
 
 事件名字面量统一在 [src-tauri/src/constants.rs](src-tauri/src/constants.rs) `events` 模块与前端 service 内，禁止硬编码。
 
@@ -301,6 +312,7 @@ fileflow-desktop/                        # 仓库目录名（可手动改为 kk-
 - **后缀修改**：`preview_suffix_change` / `apply_suffix_change` / `list_suffix_change_records` / `get_suffix_change_record_detail` / `check_suffix_rollback` / `delete_suffix_change_record` / `rollback_suffix_change`
 - **Mod 工具**：`preview_mod_rename` / `apply_mod_rename` / `preview_mod_organize` / `apply_mod_organize` / `preview_mod_duplicates` / `start_mod_duplicate_task` / `apply_mod_duplicate_delete` / `preview_mod_versions` / `start_mod_version_task` / `apply_mod_version_delete` / `apply_mod_modify_version` / `list_mod_op_records` / `get_mod_op_record_detail` / `check_mod_op_rollback` / `rollback_mod_op` / `delete_mod_op_record` / `rename_mod_op_record` / `start_mod_scan_task`
 - **Pixiv 标签整理**：`scan_pixiv_image_candidates`（同步）/ `start_pixiv_tag_scan_task`（长任务，入参 `pids` 而不是路径）/ `fetch_pixiv_tag_single`（重试）/ `move_image_by_tag_command`（移动）
+- **图片相似度去重**：`start_image_dedup_task`（长任务，结果通过 `image_dedup_partial` 推送）/ `apply_image_dedup_delete` / `list_image_dedup_records` / `get_image_dedup_record_detail` / `check_image_dedup_rollback` / `rollback_image_dedup` / `delete_image_dedup_record` / `rename_image_dedup_record`
 
 ### 长任务 task_id 约定
 
@@ -494,7 +506,7 @@ Mod 各面板（Rename / Organize / Duplicate / Version / Scan）与去重分组
 2. **命令注册**：新 `#[tauri::command]` 必须在 `lib.rs::invoke_handler!` 注册并写前端 service。
 3. **记录型操作**：后端走 `op_record_repo + op_pipeline`，任务面板走 `OpsPanel` 薄包装，记录管理页走 `RecordTab`，前端 store 用 `stores/_opRecordCrud.ts` 的工厂生成通用 CRUD action。非纯 rename 用 `persist_apply_with_executor`，item 记 `old_path = 原始, new_path = 备份`。
 4. **数据库迁移**：只允许 `CREATE TABLE IF NOT EXISTS` / `ALTER TABLE ... ADD COLUMN`，不改已有列。迁移写在 `schema.rs::init_schema` 末尾。
-5. **IPC 事件**：新事件登记 `constants.rs::events`，写 `services/events.rs` emit 函数，在前端 store 的 `initEvents` 监听。长任务 spawn 失败兜底统一调 `events::finalize_failed_long_task(app, state, task_id, err)`：发 `task_state_changed=Failed` + `task_failed` 事件 + `state.remove_task`。partial done 信号需要业务侧自行先发（不同任务 payload 不同），再调本 helper。**禁止在每个命令模块再抄一份 emit_state_changed + emit_task_failed + remove_task 三件套**。命令层启动长任务统一走 `events::spawn_long_task(app, state, task_id, make_future, on_failure_extra)`：克隆 `state/app/task_id` 给 spawn 闭包、把业务 future 喂进去、失败时先调 `on_failure_extra`（用来发本业务的 partial done）再走 `finalize_failed_long_task`。dedup / mod_scan / mod_duplicate / mod_version 四个长任务都走这套；pixiv 是例外——它内部已经统一终态收尾（`finalize_done`/`finalize_failed`），命令层只 spawn 不做兜底，否则失败会发两次 `Failed`。
+5. **IPC 事件**：新事件登记 `constants.rs::events`，写 `services/events.rs` emit 函数，在前端 store 的 `initEvents` 监听。长任务 spawn 失败兜底统一调 `events::finalize_failed_long_task(app, state, task_id, err)`：发 `task_state_changed=Failed` + `task_failed` 事件 + `state.remove_task`。partial done 信号需要业务侧自行先发（不同任务 payload 不同），再调本 helper。**禁止在每个命令模块再抄一份 emit_state_changed + emit_task_failed + remove_task 三件套**。命令层启动长任务统一走 `events::spawn_long_task(app, state, task_id, make_future, on_failure_extra)`：克隆 `state/app/task_id` 给 spawn 闭包、把业务 future 喂进去、失败时先调 `on_failure_extra`（用来发本业务的 partial done）再走 `finalize_failed_long_task`。dedup / mod_scan / mod_duplicate / mod_version / image_dedup 五个长任务都走这套；pixiv 是例外——它内部已经统一终态收尾（`finalize_done`/`finalize_failed`），命令层只 spawn 不做兜底，否则失败会发两次 `Failed`。
 6. **路径**：`std::fs` 入参一律 `to_extended_length_path`；返回前端的路径一律 `to_user_friendly_path`。
 7. **并发**：线程数从 `op_pipeline::resolve_thread_count` 取，不要 inline 读 `settings.thread_count`。
 8. **文件名**：用 `utils::filename` 里的函数，不要自己实现一份。
@@ -508,13 +520,16 @@ Mod 各面板（Rename / Organize / Duplicate / Version / Scan）与去重分组
 
 ### 事件 / 枚举（硬编码，不开放给用户）
 
-- 事件：`constants::events::{TASK_LOG, TASK_PROGRESS, TASK_STATE_CHANGED, TASK_FAILED, TASK_RESULT_PARTIAL, TASK_COMPLETED, MOVE_REPORT_READY, MOD_SCAN_COMPLETED, MOD_DUPLICATE_PARTIAL, MOD_VERSION_PARTIAL, PIXIV_TAG_PARTIAL}`
-- 阶段：`constants::stages::{SCAN, HASH, MOD_SCAN, MOD_DUPLICATE, MOD_VERSION, PIXIV_TAG}`
+- 事件：`constants::events::{TASK_LOG, TASK_PROGRESS, TASK_STATE_CHANGED, TASK_FAILED, TASK_RESULT_PARTIAL, TASK_COMPLETED, MOVE_REPORT_READY, MOD_SCAN_COMPLETED, MOD_DUPLICATE_PARTIAL, MOD_VERSION_PARTIAL, PIXIV_TAG_PARTIAL, IMAGE_DEDUP_PARTIAL}`
+- 阶段：`constants::stages::{SCAN, HASH, MOD_SCAN, MOD_DUPLICATE, MOD_VERSION, PIXIV_TAG, IMAGE_DEDUP_HASH}`
 - 日志等级：`constants::log_level::{INFO, WARN, ERROR}`
 - 保留策略：`constants::keep_policy::{NEWEST, OLDEST}`
+- 图片保留策略：`constants::image_keep_policy::{LARGEST_RESOLUTION, LARGEST_FILE, NEWEST, OLDEST}`
+- 图片哈希算法：`constants::image_hash_algorithm::{PHASH, DHASH, AHASH}`
 - 主题：`constants::theme::{LIGHT, DARK, SYSTEM}`
 - Mod 操作类型：`constants::mod_op_kind::{RENAME, ORGANIZE, MODIFY, DUPLICATE_DELETE, VERSION_DELETE}`
 - 空文件夹操作类型：`constants::empty_dir_op_kind::DELETE`
+- 图片去重操作类型：`constants::image_dedup_op_kind::SIMILARITY_DELETE`
 - 哈希状态：`constants::hash_entry_status::ACTIVE`
 - 数据库文件：`constants::db_file::{DEFAULT_NAME, WAL_EXT, SHM_EXT}`
 
@@ -547,6 +562,15 @@ Mod 各面板（Rename / Organize / Duplicate / Version / Scan）与去重分组
 | `pixiv_use_translation` | bool | false | 是否在 chip 上用译名替代原 tag 显示。开启时点击移动也按译名建子目录；本地翻译优先，其次 Pixiv 响应里的 `translation.en`，缺译名的 tag 自动回落原 tag。任务面板顶部"使用英文译名"开关与本设置同步。 |
 | `pixiv_rate_limit_per_minute` | i32 | 60 | Pixiv 拉取的每分钟最大请求数。0 视为不限速，UI 限制最小 1、最大 600。所有并发 worker 与单条重试共享同一条 next-slot 节流队列，整体速率被钉死在 `值/60` 次/秒——并发只控"同时在飞的请求数"，本设置控"任意 60s 滚动窗口内总请求数"。 |
 | `pixiv_partial_flush_interval_ms` | i32 | 0 | Pixiv 增量结果在前端的合并刷新间隔（毫秒）。0 = 实时（partial 一到达就 commit）；>0 = 节流到固定间隔（多个 partial 合并到一次 commit）。UI 范围 0–10000ms。`done` 终态会立刻 flush，不被节流拖延。50K 张图配 300–800ms 节流明显降低 UI 抖动，不影响后端拉取速度。 |
+| `image_dedup_algorithm` | str | `phash` | 图片相似度去重感知哈希算法。`phash` → `image_hasher::HashAlg::DoubleGradient`（crate 没有 DCT pHash，DoubleGradient 是最稳的近似）；`dhash` → `Gradient`；`ahash` → `Mean`。无效字符串后端回落到 `phash`。 |
+| `image_dedup_hash_size` | i32 | 16 | 哈希边长（最终 bit 数 = size×size）。`< 4` 强制提升到 4 防 panic。16 → 256 bit，分辨力对场景级差异够用；32 内存翻 4 倍但收益不大；8 误报偏多。 |
+| `image_dedup_similarity_threshold` | i32 | 90 | 相似度阈值（百分比，0–100）。100 等同字节级相同；90 ≈ Hamming 距离 ≤ 总位数的 10%（256 bit → 25 bit），适合大多数图库。后端按此把 hamming 距离上限算成 `(100 - 阈值)/100 × total_bits`。 |
+| `image_dedup_extensions` | str[] | `["jpg","jpeg","png","webp","bmp","gif"]` | 参与扫描的扩展名（小写不带点）。落库 JSON 数组字符串。空数组视为不限（所有 image 库支持的格式都会尝试）。 |
+| `image_dedup_min_file_size_kb` | i32 | 10 | 跳过 < 此值的小文件（KiB）；过滤掉缩略图 / favicon。0 视为不限。 |
+| `image_dedup_min_dimension` | i32 | 64 | 跳过宽或高 < 此值的小图（像素）；过滤掉图标 / sprite。0 视为不限。 |
+| `image_dedup_keep_policy` | str | `largestResolution` | 每组 keep 选取策略：`largestResolution`（默认）/ `largestFile` / `newest` / `oldest`，与全局 `keep_policy` 二选一不同——图片场景下同一组里既可能有高分辨率也可能有压缩版，单看时间戳不足以判断哪张是"原图"。 |
+| `image_dedup_rollback_enabled` | bool | true | 是否为图片去重删除创建备份。关闭后真删 + 不可撤回，与 Mod 工具同语义。 |
+| `image_dedup_backup_dir` | str? | null | 图片去重备份根目录；为空时使用 `<exe_dir>/image-dedup-backups`。每条记录落 `<root>/<record_id>/<原文件名>`；**不参与 `preserve_dir_on_move`**——图片场景下用户更在意"按记录批量清理"而不是复刻原目录树。 |
 
 新增配置项的步骤：`models/settings.rs` 加字段 + 默认 → `db/schema.rs` 末尾 `ALTER TABLE ADD COLUMN` → `db/settings_repo.rs` 的 SELECT/UPDATE 扩列 → `types/settings.ts` 加字段 → `stores/config.ts` 初始 state 加默认 → `views/SettingsPage.vue` 加表单项。`DEFAULT_*` 兜底常量集中在 [src-tauri/src/config.rs](src-tauri/src/config.rs)。
 

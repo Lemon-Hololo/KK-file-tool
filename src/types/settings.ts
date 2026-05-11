@@ -78,6 +78,31 @@ export interface AppSettings {
    * UI 限制 0–10000ms。50K 张图配合 500ms 节流时屏幕节奏明显平稳。
    */
   pixivPartialFlushIntervalMs: number;
+
+  // ---- 图片相似度去重 ----
+  /** 感知哈希算法：phash / dhash / ahash。无效值后端会回落到 phash。 */
+  imageDedupAlgorithm: "phash" | "dhash" | "ahash" | string;
+  /** 哈希边长（最终 bit 数 = size×size），常用 8 / 16 / 32。 */
+  imageDedupHashSize: number;
+  /** 相似度阈值（百分比 0–100）；100 等同字节级相同。 */
+  imageDedupSimilarityThreshold: number;
+  /** 参与扫描的图片扩展名（小写不带点）；空数组视为不限。 */
+  imageDedupExtensions: string[];
+  /** 跳过 < 此值的小文件（KiB）。0 视为不限。 */
+  imageDedupMinFileSizeKb: number;
+  /** 跳过宽或高 < 此值的小图（像素）。0 视为不限。 */
+  imageDedupMinDimension: number;
+  /** 默认保留策略。 */
+  imageDedupKeepPolicy:
+    | "largestResolution"
+    | "largestFile"
+    | "newest"
+    | "oldest"
+    | string;
+  /** 是否启用回滚备份（与 Mod 工具同语义）。 */
+  imageDedupRollbackEnabled: boolean;
+  /** 备份目录；为空时使用 `<exe_dir>/image-dedup-backups`。 */
+  imageDedupBackupDir?: string | null;
 }
 
 export interface DbPathInfo {

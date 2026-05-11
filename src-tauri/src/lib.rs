@@ -97,7 +97,16 @@ pub fn run() {
             commands::pixiv_tag::scan_pixiv_image_candidates,
             commands::pixiv_tag::start_pixiv_tag_scan_task,
             commands::pixiv_tag::fetch_pixiv_tag_single,
-            commands::pixiv_tag::move_image_by_tag_command
+            commands::pixiv_tag::move_image_by_tag_command,
+            // image similarity dedup
+            commands::image_dedup::start_image_dedup_task,
+            commands::image_dedup::apply_image_dedup_delete,
+            commands::image_dedup::list_image_dedup_records,
+            commands::image_dedup::get_image_dedup_record_detail,
+            commands::image_dedup::check_image_dedup_rollback,
+            commands::image_dedup::rollback_image_dedup,
+            commands::image_dedup::delete_image_dedup_record,
+            commands::image_dedup::rename_image_dedup_record
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri app");

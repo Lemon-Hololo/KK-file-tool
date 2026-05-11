@@ -5,6 +5,7 @@
 
 pub mod dedup;
 pub mod empty_dirs;
+pub mod image_dedup;
 pub mod mod_tools;
 pub mod move_file;
 pub mod path;

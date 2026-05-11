@@ -35,6 +35,7 @@ const sections: SectionItem[] = [
   { id: "preview", label: "预览" },
   { id: "tools", label: "工具默认值" },
   { id: "pixiv", label: "Pixiv 标签" },
+  { id: "imageDedup", label: "图片去重" },
   { id: "database", label: "数据库管理" }
 ];
 
@@ -124,6 +125,30 @@ async function pickMoveTargetFolder() {
 async function pickModBackupFolder() {
   const selected = await pickFolder("选择 Mod 备份目录");
   if (selected) configStore.settings.modBackupDir = selected;
+}
+
+/**
+ * 弹出系统目录选择框，把选中的目录写到图片去重备份目录设置。
+ *
+ * 留空 → 后端 `services::image_dedup::backup::resolve_backup_root` 会兜底到
+ * `<exe_dir>/image-dedup-backups`。每条记录会自动落入 `<root>/<record_id>/`。
+ */
+async function pickImageDedupBackupFolder() {
+  const selected = await pickFolder("选择图片去重备份目录");
+  if (selected) configStore.settings.imageDedupBackupDir = selected;
+}
+
+/** 把扩展名数组与 ", " 拼接的字符串互转，方便用单行 input 编辑。 */
+function imageDedupExtText(): string {
+  return (configStore.settings.imageDedupExtensions ?? []).join(", ");
+}
+
+function setImageDedupExtText(text: string) {
+  const items = text
+    .split(/[,，;；\s]+/)
+    .map((s) => s.trim().replace(/^\./, "").toLowerCase())
+    .filter(Boolean);
+  configStore.settings.imageDedupExtensions = Array.from(new Set(items));
 }
 
 async function handleDeleteDb() {
@@ -918,6 +943,148 @@ watchDebounced(
                     clearable
                   />
                   <span class="hint">仅在本机数据库与配置中保存，不会上传。</span>
+                </div>
+              </div>
+            </div>
+          </Panel>
+
+          <!-- 图片相似度去重 -->
+          <Panel data-section="imageDedup" title="图片相似度去重" :padded="false">
+            <div class="form">
+              <div class="form-row">
+                <label class="label">感知哈希算法</label>
+                <div class="flex-input">
+                  <el-radio-group v-model="configStore.settings.imageDedupAlgorithm">
+                    <el-radio value="phash">pHash（推荐）</el-radio>
+                    <el-radio value="dhash">dHash</el-radio>
+                    <el-radio value="ahash">aHash</el-radio>
+                  </el-radio-group>
+                  <span class="hint-inline">
+                    pHash 抗压缩 / 缩放最稳，dHash 对裁剪敏感，aHash 最快但精度低。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">哈希边长</label>
+                <div class="flex-input">
+                  <el-input-number
+                    v-model="configStore.settings.imageDedupHashSize"
+                    :min="4"
+                    :max="64"
+                    :step="2"
+                    controls-position="right"
+                  />
+                  <span class="hint-inline">
+                    最终 bit 数 = 边长 × 边长（默认 16 → 256 bit）。32 内存翻倍但收益不大；
+                    8 误报偏多。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">相似度阈值</label>
+                <div class="flex-input">
+                  <el-slider
+                    v-model="configStore.settings.imageDedupSimilarityThreshold"
+                    :min="50"
+                    :max="100"
+                    :step="1"
+                    show-input
+                    :show-input-controls="false"
+                  />
+                  <span class="hint-inline">
+                    百分比；100 等同字节级相同。90 ≈ 合并"同图不同压缩 / 不同分辨率"，
+                    适合大多数图库；要更严就调到 95+，要更宽松降到 80。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">默认保留策略</label>
+                <div class="flex-input">
+                  <el-radio-group v-model="configStore.settings.imageDedupKeepPolicy">
+                    <el-radio value="largestResolution">分辨率最大</el-radio>
+                    <el-radio value="largestFile">文件最大</el-radio>
+                    <el-radio value="newest">修改最新</el-radio>
+                    <el-radio value="oldest">修改最旧</el-radio>
+                  </el-radio-group>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">参与扫描的扩展名</label>
+                <div class="flex-input">
+                  <el-input
+                    :model-value="imageDedupExtText()"
+                    placeholder="如 jpg, jpeg, png, webp, bmp, gif；逗号 / 分号 / 空格分隔，可带或不带点"
+                    @update:model-value="setImageDedupExtText($event)"
+                  />
+                  <span class="hint-inline">
+                    小写、不带点；空数组视为不限（所有 image 库支持的格式都会尝试）。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">最小文件大小</label>
+                <div class="flex-input">
+                  <el-input-number
+                    v-model="configStore.settings.imageDedupMinFileSizeKb"
+                    :min="0"
+                    :max="102400"
+                    :step="10"
+                    controls-position="right"
+                  />
+                  <span class="hint-inline">
+                    KiB；低于此值跳过，过滤掉缩略图 / favicon。0 = 不限。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">最小图像边长</label>
+                <div class="flex-input">
+                  <el-input-number
+                    v-model="configStore.settings.imageDedupMinDimension"
+                    :min="0"
+                    :max="8192"
+                    :step="16"
+                    controls-position="right"
+                  />
+                  <span class="hint-inline">
+                    像素；宽和高都需 ≥ 此值才参与。0 = 不限；过滤图标 / sprite。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">启用回滚备份</label>
+                <div class="flex-input">
+                  <el-switch v-model="configStore.settings.imageDedupRollbackEnabled" />
+                  <span class="hint-inline">
+                    关闭后删除直接走真删，不留备份；记录主表 rollback_enabled = 0，
+                    撤回按钮置灰。与 Mod 工具同语义。
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-row">
+                <label class="label">备份目录</label>
+                <div class="flex-input db-path-group">
+                  <el-input
+                    v-model="configStore.settings.imageDedupBackupDir"
+                    placeholder="留空使用程序目录/image-dedup-backups"
+                    clearable
+                    :disabled="!configStore.settings.imageDedupRollbackEnabled"
+                  />
+                  <el-button
+                    :icon="Folder"
+                    :disabled="!configStore.settings.imageDedupRollbackEnabled"
+                    @click="pickImageDedupBackupFolder"
+                  >
+                    选择目录
+                  </el-button>
                 </div>
               </div>
             </div>

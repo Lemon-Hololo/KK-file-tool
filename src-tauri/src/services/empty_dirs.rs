@@ -80,7 +80,10 @@ pub fn preview_empty_dirs(
     if !visited_any {
         // 全部路径都失败时把第一条错误抛出，避免 UI 拿到空数组误判为"没有空目录"。
         return Err(AppError::InvalidInput(
-            errors.into_iter().next().unwrap_or_else(|| "无可用路径".to_string()),
+            errors
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| "无可用路径".to_string()),
         ));
     }
 

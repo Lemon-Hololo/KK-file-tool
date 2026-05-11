@@ -14,8 +14,9 @@ use crate::{
     app_state::AppState,
     constants::events,
     models::{
-        DuplicateGroup, ModDuplicatePartialPayload, ModScanCompletedPayload,
-        ModVersionPartialPayload, PixivTagPartialPayload, TaskLogPayload, TaskProgressPayload,
+        DuplicateGroup, ImageDedupPartialPayload, ModDuplicatePartialPayload,
+        ModScanCompletedPayload, ModVersionPartialPayload, PixivTagPartialPayload, TaskLogPayload,
+        TaskProgressPayload,
     },
 };
 
@@ -104,6 +105,14 @@ pub fn emit_pixiv_tag_partial(app: &AppHandle, payload: &PixivTagPartialPayload)
     let _ = app.emit(events::PIXIV_TAG_PARTIAL, payload);
 }
 
+/// 图片相似度去重的扫描增量事件。
+///
+/// 与 mod_duplicate_partial 同型：每个 chunk 完成时发一次（done = false），
+/// 长任务终态发一次 done = true 的空 partial 让前端关闭"扫描中"。
+pub fn emit_image_dedup_partial(app: &AppHandle, payload: &ImageDedupPartialPayload) {
+    let _ = app.emit(events::IMAGE_DEDUP_PARTIAL, payload);
+}
+
 /// 长任务失败时的统一收尾：发"失败"状态事件 + `task_failed` 事件，并把任务从
 /// `AppState` 的运行表中移除。
 ///
@@ -111,12 +120,7 @@ pub fn emit_pixiv_tag_partial(app: &AppHandle, payload: &PixivTagPartialPayload)
 /// 命令模块都写一份 emit + remove_task 的样板。**partial done 信号需要业务侧
 /// 自行先发**（不同长任务的 partial payload 类型不同，本函数不便强行抽象），
 /// 然后再调本函数完成"状态切到 Failed + 解锁运行表"两步。
-pub fn finalize_failed_long_task(
-    app: &AppHandle,
-    state: &Arc<AppState>,
-    task_id: &str,
-    err: &str,
-) {
+pub fn finalize_failed_long_task(app: &AppHandle, state: &Arc<AppState>, task_id: &str, err: &str) {
     emit_state_changed(app, task_id, "Failed");
     emit_task_failed(app, task_id, err);
     state.remove_task(task_id);
@@ -151,7 +155,12 @@ pub fn spawn_long_task<Fut, Make, Extra>(
     let state_clone = state.clone();
     let task_id_clone = task_id.clone();
     tauri::async_runtime::spawn(async move {
-        let result = make_future(app_clone.clone(), state_clone.clone(), task_id_clone.clone()).await;
+        let result = make_future(
+            app_clone.clone(),
+            state_clone.clone(),
+            task_id_clone.clone(),
+        )
+        .await;
         if let Err(err) = result {
             on_failure_extra(&app_clone, &task_id_clone);
             finalize_failed_long_task(&app_clone, &state_clone, &task_id_clone, &err);

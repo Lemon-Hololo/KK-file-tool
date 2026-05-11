@@ -147,8 +147,8 @@ pub fn resolve_backup_root(settings: &AppSettings) -> AppResult<PathBuf> {
         }
     }
 
-    let exe = std::env::current_exe()
-        .map_err(|e| AppError::Io(format!("无法获取程序目录: {e}")))?;
+    let exe =
+        std::env::current_exe().map_err(|e| AppError::Io(format!("无法获取程序目录: {e}")))?;
     let parent = exe
         .parent()
         .ok_or_else(|| AppError::Io("程序目录无效".to_string()))?

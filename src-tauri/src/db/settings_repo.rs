@@ -20,7 +20,10 @@ pub fn get_settings(db_path: &Path) -> AppResult<AppSettings> {
                   pixiv_tag_api_base, pixiv_excluded_tags, pixiv_cookie, pixiv_proxy,
                   pixiv_use_translation, pixiv_rate_limit_per_minute,
                   pixiv_partial_flush_interval_ms, pixiv_local_tag_translations,
-                  preserve_dir_on_move
+                  preserve_dir_on_move,
+                  image_dedup_algorithm, image_dedup_hash_size, image_dedup_similarity_threshold,
+                  image_dedup_extensions, image_dedup_min_file_size_kb, image_dedup_min_dimension,
+                  image_dedup_keep_policy, image_dedup_rollback_enabled, image_dedup_backup_dir
            FROM app_settings WHERE id = 1"#,
         [],
         |r| {
@@ -32,6 +35,11 @@ pub fn get_settings(db_path: &Path) -> AppResult<AppSettings> {
             let local_translations =
                 serde_json::from_str::<HashMap<String, String>>(&local_translations_raw)
                     .unwrap_or_default();
+            // image_dedup_extensions 同样落库为 JSON 数组字符串；损坏时退回空 Vec
+            // （上层服务再降级到 DEFAULT_IMAGE_DEDUP_EXTENSIONS）。
+            let image_extensions_raw: String = r.get(28)?;
+            let image_extensions =
+                serde_json::from_str::<Vec<String>>(&image_extensions_raw).unwrap_or_default();
 
             Ok(AppSettings {
                 keep_policy: r.get(0)?,
@@ -59,6 +67,15 @@ pub fn get_settings(db_path: &Path) -> AppResult<AppSettings> {
                 pixiv_rate_limit_per_minute: r.get(21)?,
                 pixiv_partial_flush_interval_ms: r.get(22)?,
                 preserve_dir_on_move: r.get::<_, i32>(24)? != 0,
+                image_dedup_algorithm: r.get(25)?,
+                image_dedup_hash_size: r.get(26)?,
+                image_dedup_similarity_threshold: r.get(27)?,
+                image_dedup_extensions: image_extensions,
+                image_dedup_min_file_size_kb: r.get(29)?,
+                image_dedup_min_dimension: r.get(30)?,
+                image_dedup_keep_policy: r.get(31)?,
+                image_dedup_rollback_enabled: r.get::<_, i32>(32)? != 0,
+                image_dedup_backup_dir: r.get(33)?,
             })
         },
     )?;
@@ -73,6 +90,8 @@ pub fn save_settings(db_path: &Path, settings: &AppSettings) -> AppResult<()> {
         serde_json::to_string(&settings.pixiv_excluded_tags).unwrap_or_else(|_| "[]".to_string());
     let local_translations_json = serde_json::to_string(&settings.pixiv_local_tag_translations)
         .unwrap_or_else(|_| "{}".to_string());
+    let image_extensions_json = serde_json::to_string(&settings.image_dedup_extensions)
+        .unwrap_or_else(|_| "[]".to_string());
     conn.execute(
         r#"UPDATE app_settings
            SET keep_policy = ?, move_target_path = ?, save_record_enabled = ?, use_last_record_enabled = ?,
@@ -84,7 +103,10 @@ pub fn save_settings(db_path: &Path, settings: &AppSettings) -> AppResult<()> {
                pixiv_tag_api_base = ?, pixiv_excluded_tags = ?, pixiv_cookie = ?, pixiv_proxy = ?,
                pixiv_use_translation = ?, pixiv_rate_limit_per_minute = ?,
                pixiv_partial_flush_interval_ms = ?, pixiv_local_tag_translations = ?,
-               preserve_dir_on_move = ?
+               preserve_dir_on_move = ?,
+               image_dedup_algorithm = ?, image_dedup_hash_size = ?, image_dedup_similarity_threshold = ?,
+               image_dedup_extensions = ?, image_dedup_min_file_size_kb = ?, image_dedup_min_dimension = ?,
+               image_dedup_keep_policy = ?, image_dedup_rollback_enabled = ?, image_dedup_backup_dir = ?
            WHERE id = 1"#,
         params![
             settings.keep_policy,
@@ -112,6 +134,15 @@ pub fn save_settings(db_path: &Path, settings: &AppSettings) -> AppResult<()> {
             settings.pixiv_partial_flush_interval_ms,
             local_translations_json,
             settings.preserve_dir_on_move as i32,
+            settings.image_dedup_algorithm,
+            settings.image_dedup_hash_size,
+            settings.image_dedup_similarity_threshold,
+            image_extensions_json,
+            settings.image_dedup_min_file_size_kb,
+            settings.image_dedup_min_dimension,
+            settings.image_dedup_keep_policy,
+            settings.image_dedup_rollback_enabled as i32,
+            settings.image_dedup_backup_dir,
         ],
     )?;
     Ok(())

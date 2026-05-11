@@ -18,6 +18,7 @@ import { useRecordStore } from "../stores/record";
 import { useSuffixStore } from "../stores/suffix";
 import { useEmptyDirsStore } from "../stores/emptyDirs";
 import { useModToolsStore } from "../stores/modTools";
+import { useImageDedupStore } from "../stores/imageDedup";
 import Panel from "../components/common/Panel.vue";
 import TabBar from "../components/common/TabBar.vue";
 import VirtualTable from "../components/common/VirtualTable.vue";
@@ -28,8 +29,11 @@ import {
   emptyDirsDetailColumns,
   emptyDirsListColumns,
   formatEmptyDirKind,
+  formatImageDedupKind,
   formatModKind,
   hashListColumns,
+  imageDedupDetailColumns,
+  imageDedupListColumns,
   modDetailColumns,
   modListColumns,
   suffixDetailColumns,
@@ -40,13 +44,15 @@ const recordStore = useRecordStore();
 const suffixStore = useSuffixStore();
 const emptyDirsStore = useEmptyDirsStore();
 const modToolsStore = useModToolsStore();
+const imageDedupStore = useImageDedupStore();
 
-const activeTab = ref<"hash" | "suffix" | "emptyDirs" | "mod">("hash");
+const activeTab = ref<"hash" | "suffix" | "emptyDirs" | "mod" | "imageDedup">("hash");
 const tabs = [
   { label: "哈希记录", value: "hash" },
   { label: "后缀修改", value: "suffix" },
   { label: "空文件夹清理", value: "emptyDirs" },
-  { label: "Mod 操作", value: "mod" }
+  { label: "Mod 操作", value: "mod" },
+  { label: "图片去重", value: "imageDedup" }
 ];
 
 // ---- 哈希 tab 专属（与其他三个不同：多了"应用记录"和"重命名"按钮） ----
@@ -82,6 +88,10 @@ function suffixSearchableFields(r: { recordName: string; recordId: string; [k: s
 }
 
 function emptyDirsSearchableFields(r: { recordName: string; recordId: string; [k: string]: unknown }): string {
+  return `${r.recordName} ${r.recordId} ${String(r.kind ?? "")}`;
+}
+
+function imageDedupSearchableFields(r: { recordName: string; recordId: string; [k: string]: unknown }): string {
   return `${r.recordName} ${r.recordId} ${String(r.kind ?? "")}`;
 }
 
@@ -136,12 +146,24 @@ async function renameModRecord(row: any) {
   ElMessage.success("重命名成功");
 }
 
+// ---- Image dedup tab：rowActions slot 里的"重命名"按钮 ----
+async function renameImageDedupRow(row: any) {
+  const { value } = await ElMessageBox.prompt("请输入新名称", "重命名", {
+    inputValue: row.recordName,
+    inputValidator: (v) => !!v?.trim() || "名称不能为空"
+  });
+  if (!value) return;
+  await imageDedupStore.rename(row.recordId, value.trim());
+  ElMessage.success("重命名成功");
+}
+
 onMounted(async () => {
   await Promise.all([
     recordStore.refresh(),
     suffixStore.refreshRecords(),
     emptyDirsStore.refreshRecords(),
-    modToolsStore.refreshRecords()
+    modToolsStore.refreshRecords(),
+    imageDedupStore.refreshRecords()
   ]);
 });
 </script>
@@ -152,7 +174,7 @@ onMounted(async () => {
       <TabBar
         :model-value="activeTab"
         :items="tabs"
-        @update:model-value="(v: string) => (activeTab = v as 'hash' | 'suffix' | 'emptyDirs' | 'mod')"
+        @update:model-value="(v: string) => (activeTab = v as 'hash' | 'suffix' | 'emptyDirs' | 'mod' | 'imageDedup')"
       />
     </div>
 
@@ -268,6 +290,29 @@ onMounted(async () => {
         </template>
         <template #extraDescription="{ summary }">
           <el-descriptions-item label="类型">{{ formatModKind((summary as any).kind) }}</el-descriptions-item>
+        </template>
+      </RecordTab>
+
+      <!-- 图片去重记录 -->
+      <RecordTab
+        v-show="activeTab === 'imageDedup'"
+        :store="imageDedupStore as any"
+        :list-columns="imageDedupListColumns"
+        :detail-columns="imageDedupDetailColumns"
+        panel-title="图片去重记录"
+        detail-title="图片去重记录详情"
+        search-placeholder="搜索记录…"
+        list-column-config-key="records:image-dedup-list"
+        detail-column-config-key="records:image-dedup-detail"
+        :searchable-fields="imageDedupSearchableFields"
+        :actions-column-width="240"
+        enforce-rollback-enabled
+      >
+        <template #rowActions="{ row }">
+          <el-button size="small" @click="renameImageDedupRow(row)">重命名</el-button>
+        </template>
+        <template #extraDescription="{ summary }">
+          <el-descriptions-item label="类型">{{ formatImageDedupKind((summary as any).kind) }}</el-descriptions-item>
         </template>
       </RecordTab>
     </div>

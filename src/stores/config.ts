@@ -53,6 +53,16 @@ export const useConfigStore = defineStore("config", {
       pixivUseTranslation: false,
       pixivRateLimitPerMinute: 60,
       pixivPartialFlushIntervalMs: 0,
+      // 图片相似度去重
+      imageDedupAlgorithm: "phash",
+      imageDedupHashSize: 16,
+      imageDedupSimilarityThreshold: 90,
+      imageDedupExtensions: ["jpg", "jpeg", "png", "webp", "bmp", "gif"],
+      imageDedupMinFileSizeKb: 10,
+      imageDedupMinDimension: 64,
+      imageDedupKeepPolicy: "largestResolution",
+      imageDedupRollbackEnabled: true,
+      imageDedupBackupDir: "",
     } as AppSettings,
 
     dbPathInfo: null as DbPathInfo | null,
